@@ -1,0 +1,10 @@
+# DroidNet Sentinel — Requirements
+# pip install -r requirements.txt
+
+# Core
+requests==2.31.0
+rich==13.7.0
+flask==3.0.0
+
+# Opcional: solo si usas spoofer.py en Linux/PC
+# scapy==2.5.0

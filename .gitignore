@@ -1,0 +1,25 @@
+# ── Credenciales y configuración sensible ──
+config.json
+*.env
+.env
+
+# ── Reportes generados (datos de tu red) ──
+reports/
+
+# ── Entorno virtual Python ──
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ── Logs ──
+*.log
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── IDEs ──
+.vscode/
+.idea/
