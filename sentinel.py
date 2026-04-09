@@ -31,6 +31,9 @@ from rich.console import Console          # Output enriquecido en terminal
 from rich.table   import Table            # Tablas visuales en terminal
 from rich         import print as rprint  # Print con markup de colores Rich
 
+# ── Módulos internos ──────────────────────────────────────────────
+from platform_utils import get_wifi_info, send_notification
+
 # ── Instancia global de consola Rich ─────────────────────────────
 console = Console()
 
@@ -100,7 +103,7 @@ def get_mac_vendor(mac_address):
         response = requests.get(url, timeout=3)
         if response.status_code == 200:
             return response.text
-    except:
+    except Exception:
         pass
     return "Desconocido"
 
@@ -204,31 +207,10 @@ def display_results_table(ssid, scan_data):
     console.print("\n", table, "\n")
 
 
-#  MÓDULO RED: Información de conexión WiFi activa
-
-def get_wifi_info():
-    """
-    Obtiene la información de la conexión WiFi activa usando
-    la API nativa de Termux (termux-wifi-connectioninfo).
-
-    Solo devuelve datos si el estado del supplicant es COMPLETED,
-    es decir, si hay una conexión WiFi activa y autenticada.
-
-    Returns:
-        dict | None: JSON con ssid, ip, bssid, etc. o None si no hay WiFi.
-    """
-    try:
-        result = subprocess.run(
-            ['termux-wifi-connectioninfo'],
-            capture_output=True,
-            text=True
-        )
-        data = json.loads(result.stdout)
-        if data.get("supplicant_state") == "COMPLETED":
-            return data
-    except:
-        return None
-    return None
+# ── NOTA ──────────────────────────────────────────────────────────
+# get_wifi_info() se importa de platform_utils (cross-platform)
+# Soporta tanto Termux (termux-wifi-connectioninfo) como
+# Linux PC (nmcli / iwconfig + ip addr)
 
 
 #  MÓDULO DESCUBRIMIENTO: Ping sweep de la subred /24
@@ -259,7 +241,7 @@ def ping_sweep(ip_address, excluded_list):
 
         # Parseamos las IPs de la salida: "Nmap scan report for 192.168.1.X"
         return re.findall(r'Nmap scan report for (\d+\.\d+\.\d+\.\d+)', proc.stdout)
-    except:
+    except Exception:
         return []
 
 
@@ -297,7 +279,7 @@ def deep_scan(live_ips):
             # Si no hay puertos abiertos, el host tiene "escudo intacto"
             results[ip] = [p.strip() for p in ports] if ports else ["Escudo intacto"]
 
-        except:
+        except Exception:
             results[ip] = ["Error"]
 
     return results
@@ -459,11 +441,10 @@ def run_sentinel(interactive=False):
                 else:
                     rprint("[yellow][-] Sin hosts detectados en la red.[/yellow]")
 
-                # ── 6a. Notificación nativa Android ───────────────
-                os.system(
-                    f'termux-notification '
-                    f'-t "Sentinel Alert" '
-                    f'-c "{len(objetivos)} hosts analizados en {current_ssid}"'
+                # ── 6a. Notificación nativa del sistema ──────────
+                send_notification(
+                    'Sentinel Alert',
+                    f'{len(objetivos)} hosts analizados en {current_ssid}'
                 )
 
                 # ── 6b. Alerta remota Telegram C2 ─────────────────

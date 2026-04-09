@@ -32,11 +32,10 @@ jurisdictions. The author is not responsible for misuse.
 
 ## 📱 Requisitos
 
-### Hardware
-- Android con root
-- Termux instalado (F-Droid, no Play Store)
+### Android (Termux)
 
-### Software
+**Hardware:** Android con root · Termux instalado (F-Droid, no Play Store)
+
 ```bash
 # Paquetes Termux
 pkg update && pkg upgrade
@@ -45,6 +44,22 @@ pkg install python nmap dsniff termux-api
 # Dependencias Python
 pip install -r requirements.txt
 ```
+
+### 🖥️ Linux PC (Ubuntu/Debian/Kali)
+
+```bash
+# Herramientas de red
+sudo apt install nmap dsniff libnotify-bin wireless-tools
+
+# (Opcional) Para búsqueda de exploits
+sudo apt install exploitdb
+
+# Dependencias Python
+pip install -r requirements.txt
+```
+
+> **Nota:** El toolkit detecta automáticamente la plataforma y usa
+> las herramientas nativas de cada una (nmcli en PC, termux-api en Android).
 
 ---
 
@@ -137,15 +152,19 @@ Deep scan de hosts activos (-F -sV)
 
 ```
 DroidNet-Sentinel/
-├── sentinel.py        # Módulo principal
-├── hunter.py          # Módulo de exploits
-├── dashboard.py       # Servidor Flask
-├── spoofer.py         # Módulo ARP
+├── main.py            # CLI interactivo (punto de entrada)
+├── sentinel.py        # Módulo principal de escaneo
+├── hunter.py          # Módulo de exploits (Exploit-DB)
+├── dashboard.py       # Servidor Flask (Command Center)
+├── spoofer.py         # Módulo ARP Spoofing
+├── deauther.py        # Módulo Deauth 802.11
+├── platform_utils.py  # Abstracción cross-platform (PC/Android)
+├── core_env.py        # Detección de capacidades del sistema
 ├── config.json        # Tu configuración (no se sube)
 ├── requirements.txt
 ├── .gitignore
 ├── README.md
-└── reports/           # Reportes JSON l
+└── reports/           # Reportes JSON generados
     └── Red_SSID_timestamp.json
 ```
 

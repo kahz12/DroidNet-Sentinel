@@ -32,11 +32,13 @@
 # ── Stdlib ────────────────────────────────────────────────────────
 import subprocess  # Para ejecutar arpspoof como proceso externo
 import sys         # Para sys.argv y sys.exit()
-import os          # Para os.geteuid() (verificación de root)
-import signal      # Importado por si se necesita manejo de señales futuro
+import os          # Para os.path y utilidades de sistema
 
 # ── Terceros ──────────────────────────────────────────────────────
 from rich import print as rprint  # Print con markup de colores Rich
+
+# ── Módulos internos ──────────────────────────────────────────────
+from platform_utils import check_root, get_default_iface
 
 
 #  MÓDULO VERIFICACIÓN: Disponibilidad de arpspoof en el sistema
@@ -166,7 +168,7 @@ if __name__ == "__main__":
     """
 
     # Guard: root es obligatorio para enviar paquetes ARP raw
-    if os.geteuid() != 0:
+    if not check_root():
         rprint("[red][✗] Necesitas root.[/red]")
         sys.exit(1)
 
@@ -176,9 +178,9 @@ if __name__ == "__main__":
         rprint("[dim]Ejemplo: python spoofer.py 192.168.1.105 192.168.1.1 wlan0[/dim]")
         sys.exit(1)
 
-    # Parseamos argumentos — interfaz es opcional, default wlan0
+    # Parseamos argumentos — interfaz es opcional, se autodetecta
     target  = sys.argv[1]
     gateway = sys.argv[2]
-    iface   = sys.argv[3] if len(sys.argv) > 3 else "wlan0"
+    iface   = sys.argv[3] if len(sys.argv) > 3 else get_default_iface()
 
     poison(target, gateway, iface)

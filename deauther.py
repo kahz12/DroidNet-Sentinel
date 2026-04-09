@@ -32,12 +32,16 @@
 """
 
 # ── Stdlib ────────────────────────────────────────────────────────
-import sys   # Para sys.argv y sys.exit()
-import os    # Para os.geteuid() y os.system() (comandos iw/ip)
-import time  # Para time.sleep() durante la activación de monitor mode
+import sys        # Para sys.argv y sys.exit()
+import os         # Para os.path y utilidades de sistema
+import time       # Para time.sleep() durante la activación de monitor mode
+import subprocess # Para ejecutar comandos de red sin shell injection
 
 # ── Terceros ──────────────────────────────────────────────────────
 from rich import print as rprint  # Print con markup de colores Rich
+
+# ── Módulos internos ──────────────────────────────────────────────
+from platform_utils import check_root
 
 # ── Importación condicional de Scapy ─────────────────────────────
 # Scapy puede no estar instalado o no funcionar en Android.
@@ -81,7 +85,7 @@ def check_monitor_mode(iface):
     try:
         with open(f"/sys/class/net/{iface}/type") as f:
             return f.read().strip() == "803"
-    except:
+    except Exception:
         # Si el archivo no existe, la interfaz no existe o no es WiFi
         return False
 
@@ -116,9 +120,9 @@ def enable_monitor(iface):
     """
     rprint(f"[yellow][!][/yellow] Intentando activar monitor mode en {iface}...")
 
-    os.system(f"ip link set {iface} down")
-    os.system(f"iw dev {iface} set type monitor")
-    os.system(f"ip link set {iface} up")
+    subprocess.run(['ip', 'link', 'set', iface, 'down'], capture_output=True)
+    subprocess.run(['iw', 'dev', iface, 'set', 'type', 'monitor'], capture_output=True)
+    subprocess.run(['ip', 'link', 'set', iface, 'up'], capture_output=True)
     time.sleep(1)  # Damos tiempo al kernel para aplicar el cambio
 
     return check_monitor_mode(iface)
@@ -214,7 +218,7 @@ def deauth_target(target_mac, bssid, iface, count=0, interval=0.1):
         return
 
     # Guard: raw sockets requieren root
-    if os.geteuid() != 0:
+    if not check_root():
         rprint("[red][✗] Necesitas root.[/red]")
         return
 

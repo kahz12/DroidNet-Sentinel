@@ -31,6 +31,9 @@ from rich.table   import Table
 from rich.prompt  import Prompt, Confirm
 from rich         import print as rprint
 
+# ── Módulos internos ──────────────────────────────────────────────
+from platform_utils import check_root, get_default_iface
+
 console = Console()
 
 # ── Versión del toolkit ───────────────────────────────────────────
@@ -71,6 +74,15 @@ def print_banner():
     )
     console.print()
 
+    # Evaluación del entorno operativo
+    try:
+        from core_env import evaluate_system, display_capabilities
+        env_state = evaluate_system()
+        display_capabilities(env_state)
+        console.print()
+    except ImportError:
+        pass
+
 
 # ══════════════════════════════════════════════════════════════════
 #  UI: Menú principal
@@ -87,15 +99,15 @@ def print_menu():
     table.add_column(style="bold white",  width=28)
     table.add_column(style="dim")
 
-    table.add_row("[ 1 ]", "Sentinel — Escaneo rápido",    "Escanea la red y muestra resultados")
-    table.add_row("[ 2 ]", "Sentinel — Modo daemon",        "Escaneo continuo en background")
-    table.add_row("[ 3 ]", "Hunter — Buscar exploits",      "Analiza el último reporte vs Exploit-DB")
-    table.add_row("[ 4 ]", "Dashboard — Command Center",    "Levanta servidor web en :5000")
-    table.add_row("[ 5 ]", "Spoofer — Corte ARP manual",    "Cortar acceso a una IP específica")
-    table.add_row("[ 6 ]", "Deauther — Deauth 802.11",      "Desconectar dispositivo del AP")
-    table.add_row("[ 7 ]", "Ver reportes guardados",        "Listar auditorías anteriores")
+    table.add_row("[1]", "Sentinel — Escaneo rápido",    "Escanea la red y muestra resultados")
+    table.add_row("[2]", "Sentinel — Modo daemon",        "Escaneo continuo en background")
+    table.add_row("[3]", "Hunter — Buscar exploits",      "Analiza el último reporte vs Exploit-DB")
+    table.add_row("[4]", "Dashboard — Command Center",    "Levanta servidor web en :5000")
+    table.add_row("[5]", "Spoofer — Corte ARP manual",    "Cortar acceso a una IP específica")
+    table.add_row("[6]", "Deauther — Deauth 802.11",      "Desconectar dispositivo del AP")
+    table.add_row("[7]", "Ver reportes guardados",        "Listar auditorías anteriores")
     table.add_row("[dim]─[/dim]", "[dim]──────────────────────────[/dim]", "")
-    table.add_row("[ 0 ]", "[red]Salir[/red]",              "")
+    table.add_row("[0]", "[red]Salir[/red]",              "")
 
     console.print(
         Panel(table, title="[bold cyan]⚡ MENÚ PRINCIPAL[/bold cyan]", border_style="cyan")
@@ -175,14 +187,14 @@ def run_spoofer_interactive():
         return
 
     # Verificar root antes de pedir datos
-    if os.geteuid() != 0:
+    if not check_root():
         rprint("[red][✗] Necesitas root para ejecutar el spoofer.[/red]")
         return
 
     console.print("\n[bold cyan]── ARP Spoofer ──[/bold cyan]")
     target_ip  = Prompt.ask("  IP víctima")
     gateway_ip = Prompt.ask("  IP gateway", default="192.168.1.1")
-    iface      = Prompt.ask("  Interfaz",   default="wlan0")
+    iface      = Prompt.ask("  Interfaz",   default=get_default_iface())
 
     console.print()
     poison(target_ip, gateway_ip, iface)
@@ -199,7 +211,7 @@ def run_deauther_interactive():
         rprint("[red][✗] deauther.py no encontrado.[/red]")
         return
 
-    if os.geteuid() != 0:
+    if not check_root():
         rprint("[red][✗] Necesitas root para ejecutar el deauther.[/red]")
         return
 
@@ -250,11 +262,11 @@ def list_reports():
             ts = data.get("time", "")
             try:
                 ts = datetime.strptime(ts, "%Y%m%d_%H%M%S").strftime("%d/%m/%Y %H:%M")
-            except:
+            except Exception:
                 pass
             hosts = str(len(data.get("targets", {})))
             table.add_row(str(i), data.get("network", "?"), ts, hosts, os.path.basename(f))
-        except:
+        except Exception:
             table.add_row(str(i), "?", "?", "?", os.path.basename(f))
 
     console.print("\n", table, "\n")
@@ -303,7 +315,7 @@ def interactive_menu():
 
         # Pausa antes de volver al menú para que el usuario lea el output
         try:
-            input("[dim]  Presiona Enter para volver al menú...[/dim]")
+            console.input("[dim]  Presiona Enter para volver al menú...[/dim]")
         except KeyboardInterrupt:
             break
 
@@ -395,13 +407,13 @@ def handle_args(args):
             rprint("[red][✗] spoofer.py no encontrado.[/red]")
             return True
 
-        if os.geteuid() != 0:
+        if not check_root():
             rprint("[red][✗] Necesitas root.[/red]")
             return True
 
         target  = args.spoof[0]
         gateway = args.spoof[1]
-        iface   = args.spoof[2] if len(args.spoof) > 2 else "wlan0"
+        iface   = args.spoof[2] if len(args.spoof) > 2 else get_default_iface()
         poison(target, gateway, iface)
         return True
 
@@ -412,7 +424,7 @@ def handle_args(args):
             rprint("[red][✗] deauther.py no encontrado.[/red]")
             return True
 
-        if os.geteuid() != 0:
+        if not check_root():
             rprint("[red][✗] Necesitas root.[/red]")
             return True
 

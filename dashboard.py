@@ -205,7 +205,7 @@ def parse_time(time_str):
     try:
         dt = datetime.strptime(time_str, "%Y%m%d_%H%M%S")
         return dt.strftime("%d/%m/%Y %H:%M:%S")
-    except:
+    except Exception:
         return time_str
 
 
