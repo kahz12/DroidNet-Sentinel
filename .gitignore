@@ -1,25 +1,56 @@
-# ── Credenciales y configuración sensible ──
-config.json
-*.env
-.env
-
-# ── Reportes generados (datos de tu red) ──
-reports/
-
-# ── Entorno virtual Python ──
-venv/
-.venv/
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
+*.so
 
-# ── Logs ──
+# Distribución / empaquetado
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+.env/
+
+# ── Tests y cobertura ─────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Reportes generados (datos de red) ─────────────────────────────
+reports/
+
+# ── Credenciales y configuración sensible ─────────────────────────
+.env
+*.env
+config.json
+secrets.*
+
+# ── Logs ──────────────────────────────────────────────────────────
 *.log
+logs/
 
-# ── OS ──
+# ── Bases de datos ────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── OS ────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# ── IDEs ──
+# ── IDEs ──────────────────────────────────────────────────────────
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
