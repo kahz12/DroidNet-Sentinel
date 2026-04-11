@@ -26,8 +26,12 @@ from droidnet.config       import (
     REPORTS_DIR,
     load_user_config,
 )
+from droidnet.core.database  import init_db, save_scan
 from droidnet.core.notifier  import send_alert
 from droidnet.platform.utils import get_wifi_info
+
+# Ensure the database schema exists before any scan runs.
+init_db()
 
 console = Console()
 
@@ -248,8 +252,10 @@ def run_sentinel(interactive: bool = True) -> None:
                 targets = ping_sweep(my_ip, excluded)
 
                 if targets:
-                    results = deep_scan(targets)
+                    results   = deep_scan(targets)
+                    ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
                     save_report(current_ssid, results)
+                    save_scan(current_ssid, ts, results)
                     display_results_table(current_ssid, results)
                     cut_unknowns(targets, my_ip, config)
                 else:
