@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hunt",      action="store_true", help="Buscar exploits en último reporte")
     parser.add_argument("--dashboard", action="store_true", help="Levantar dashboard web")
     parser.add_argument("--reports",   action="store_true", help="Listar reportes guardados")
+    parser.add_argument("--cve-watch", action="store_true", help="Monitorear CVEs vs red escaneada")
 
     parser.add_argument(
         "--spoof",
@@ -79,6 +80,11 @@ def handle_args(args: argparse.Namespace) -> bool:
     if args.reports:
         from droidnet.cli.menu import list_reports
         list_reports()
+        return True
+
+    if args.cve_watch:
+        from droidnet.modules.cve_watcher import run_cve_watcher
+        run_cve_watcher(show_history=True)
         return True
 
     if args.spoof:

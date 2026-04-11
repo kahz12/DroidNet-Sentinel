@@ -40,6 +40,7 @@ DroidNet Sentinel is a modular, cross-platform network security toolkit that per
 - [Modules](#modules)
   - [Sentinel — Core Scanner](#sentinel--core-scanner)
   - [Hunter — Exploit Lookup](#hunter--exploit-lookup)
+  - [CVE-Watcher — CVE Monitor](#cve-watcher--cve-monitor)
   - [Dashboard — Command Center](#dashboard--command-center)
   - [Spoofer — ARP MitM](#spoofer--arp-mitm)
   - [Deauther — 802.11 Deauth](#deauther--80211-deauth)
@@ -68,6 +69,7 @@ DroidNet Sentinel is a modular, cross-platform network security toolkit that per
 | **Persistence** | Dual storage: flat JSON files + SQLite database (`sentinel.db`) |
 | **Historical Diff** | Per-scan comparison: new devices, disappeared hosts, port changes |
 | **Exploit Lookup** | Local Exploit-DB search via `searchsploit` (Hunter module) |
+| **CVE Monitoring** | Real-time CVE cross-referencing via NIST NVD API with impact analysis (CVE-Watcher module) |
 | **Active Response** | ARP poisoning of unknown/untrusted hosts (Spoofer module) |
 | **Deauthentication** | 802.11 deauth frames via Scapy — single client or broadcast (Deauther module) |
 | **Web Dashboard** | Flask-based Command Center with session auth, scan history, and diff view |
@@ -93,6 +95,7 @@ main.py
   ├── droidnet/modules/
   │   ├── sentinel.py      ← ping sweep + deep scan + ARP response + report save
   │   ├── hunter.py        ← exploit lookup via searchsploit
+  │   ├── cve_watcher.py   ← CVE monitoring via NIST NVD API + impact analysis
   │   ├── spoofer.py       ← ARP poisoning (bidirectional, dsniff)
   │   └── deauther.py      ← 802.11 deauth frames (Scapy)
   │
@@ -141,6 +144,7 @@ DroidNet-Sentinel/
 │   │   ├── __init__.py
 │   │   ├── sentinel.py            # Core scanner
 │   │   ├── hunter.py              # Exploit lookup
+│   │   ├── cve_watcher.py         # CVE monitoring + impact analysis
 │   │   ├── spoofer.py             # ARP spoofing
 │   │   └── deauther.py            # 802.11 deauthentication
 │   │
@@ -260,6 +264,7 @@ If `config.json` does not exist, Sentinel runs with empty exclusion and trust li
 | `SENTINEL_USER` | Dashboard login username | `admin` |
 | `SENTINEL_PASS` | Dashboard login password | `sentinel` |
 | `SENTINEL_SECRET` | Flask session secret key (auto-generated if absent) | random |
+| `NVD_API_KEY` | NIST NVD API key for higher rate limits (CVE-Watcher) | — |
 
 Set persistent variables in your shell profile:
 
@@ -295,6 +300,7 @@ The menu presents the following options:
 [5]  Spoofer — Manual ARP cut    Cut access to a specific IP
 [6]  Deauther — 802.11 Deauth    Disconnect a device from the AP
 [7]  View saved reports          List previous audits
+[8]  CVE-Watcher — CVE Alerts    Cross-reference scanned network with recent CVEs
 [0]  Exit
 ```
 
@@ -317,6 +323,9 @@ python main.py --dashboard
 
 # List all saved scan reports
 python main.py --reports
+
+# Monitor recent CVEs against scanned services
+python main.py --cve-watch
 
 # ARP spoof a specific device (requires root)
 python main.py --spoof <VICTIM_IP> <GATEWAY_IP> [INTERFACE]
@@ -360,6 +369,33 @@ The main scanning engine. Performs a full network audit cycle:
 Parses the most recent JSON scan report, extracts software names from Nmap version strings, and queries the local Exploit-DB via `searchsploit --json`. Displays up to 5 matching CVEs/exploits per service in the terminal.
 
 **Requires:** `exploitdb` package (`pkg install exploitdb` on Termux, `apt install exploitdb` on Debian/Kali).
+
+---
+
+### CVE-Watcher — CVE Monitor
+
+`droidnet/modules/cve_watcher.py`
+
+Monitors recently published CVEs and cross-references them against the services and versions detected by Sentinel on your network. Uses the NIST National Vulnerability Database (NVD) public API.
+
+**Flow:**
+
+1. **Load scan data** — retrieves the most recent scan with identified services from `sentinel.db`.
+2. **Parse service banners** — extracts product name and version from Nmap output (e.g. `Apache httpd 2.4.29`, `OpenSSH 7.6p1`).
+3. **Query NVD** — searches for CVEs published in the last 120 days matching each detected service. Falls back to product-only queries when version-specific searches return no results.
+4. **Impact analysis** — analyses each CVE description to classify the attack vector (remote code execution, denial of service, privilege escalation, authentication bypass, information disclosure) and generates an actionable summary.
+5. **Persistence** — stores alerts in the `cve_alerts` table (deduplicated by CVE + IP + service).
+6. **Alerting** — sends a formatted summary via OS notification and Telegram with severity breakdown.
+
+**Output:** A Rich terminal table sorted by severity (CRITICAL first), showing CVE ID, CVSS score, affected service, impacted IPs, and the impact summary.
+
+**Optional:** Set the `NVD_API_KEY` environment variable for higher API rate limits (without a key, NVD allows ~5 requests per 30 seconds).
+
+```bash
+# Via interactive menu: option [8]
+# Via CLI:
+python main.py --cve-watch
+```
 
 ---
 
@@ -452,6 +488,20 @@ ports
   id         INTEGER  PRIMARY KEY AUTOINCREMENT
   host_id    INTEGER  → hosts.id  (ON DELETE CASCADE)
   port_entry TEXT     -- raw Nmap port line, e.g. "80/tcp open http Apache 2.4.51"
+
+cve_alerts
+  id          INTEGER  PRIMARY KEY AUTOINCREMENT
+  cve_id      TEXT     -- CVE identifier, e.g. "CVE-2024-12345"
+  severity    TEXT     -- CRITICAL / HIGH / MEDIUM / LOW / UNKNOWN
+  score       REAL     -- CVSS base score (nullable)
+  service     TEXT     -- matched service string, e.g. "Apache httpd 2.4.29"
+  ip          TEXT     -- affected host IP
+  summary     TEXT     -- CVE description (truncated to 500 chars)
+  impact      TEXT     -- generated impact analysis
+  network     TEXT     -- SSID of the scanned network
+  scan_id     INTEGER  → scans.id  (ON DELETE SET NULL)
+  created_at  TEXT     -- UTC datetime of alert creation
+  UNIQUE(cve_id, ip, service)
 ```
 
 The `get_all_scans_with_diffs()` function compares each scan against the immediately preceding scan on the same network and enriches each record with:
@@ -520,6 +570,12 @@ WiFi connected
                       ▼
               Hunter — searchsploit
               query on open services
+                      │
+                      ▼
+              CVE-Watcher — query NVD
+              for recent CVEs matching
+              detected services + versions
+              → impact analysis + alerts
                       │
                       ▼
               Dashboard — historical

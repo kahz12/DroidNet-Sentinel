@@ -83,6 +83,7 @@ def print_menu() -> None:
     table.add_row("[5]", "Spoofer — Corte ARP manual",  "Cortar acceso a una IP específica")
     table.add_row("[6]", "Deauther — Deauth 802.11",    "Desconectar dispositivo del AP")
     table.add_row("[7]", "Ver reportes guardados",      "Listar auditorías anteriores")
+    table.add_row("[8]", "CVE-Watcher — Alertas CVE",   "Cruzar red escaneada con CVEs recientes")
     table.add_row("[dim]─[/dim]", "[dim]──────────────────────────[/dim]", "")
     table.add_row("[0]", "[red]Salir[/red]", "")
 
@@ -139,6 +140,11 @@ def _run_spoofer_interactive() -> None:
     iface      = Prompt.ask("  Interfaz",   default=get_default_iface())
     console.print()
     poison(target_ip, gateway_ip, iface)
+
+
+def _run_cve_watcher() -> None:
+    from droidnet.modules.cve_watcher import run_cve_watcher
+    run_cve_watcher(show_history=True)
 
 
 def _run_deauther_interactive() -> None:
@@ -214,6 +220,7 @@ def interactive_menu() -> None:
         "5": _run_spoofer_interactive,
         "6": _run_deauther_interactive,
         "7": list_reports,
+        "8": _run_cve_watcher,
     }
 
     while True:
@@ -222,7 +229,7 @@ def interactive_menu() -> None:
         try:
             choice = Prompt.ask(
                 "[bold cyan]droidnet[/bold cyan][white]>[/white]",
-                choices=["0", "1", "2", "3", "4", "5", "6", "7"],
+                choices=["0", "1", "2", "3", "4", "5", "6", "7", "8"],
                 show_choices=False,
             )
         except KeyboardInterrupt:

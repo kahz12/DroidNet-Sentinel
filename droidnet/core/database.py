@@ -75,6 +75,21 @@ def init_db() -> None:
                 host_id    INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
                 port_entry TEXT    NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS cve_alerts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                cve_id      TEXT    NOT NULL,
+                severity    TEXT    NOT NULL DEFAULT 'UNKNOWN',
+                score       REAL,
+                service     TEXT    NOT NULL,
+                ip          TEXT    NOT NULL,
+                summary     TEXT    NOT NULL,
+                impact      TEXT,
+                network     TEXT    NOT NULL,
+                scan_id     INTEGER REFERENCES scans(id) ON DELETE SET NULL,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(cve_id, ip, service)
+            );
         """)
 
 
@@ -282,3 +297,71 @@ def get_known_ips(network: str) -> set[str]:
              WHERE s.network = ?
         """, (network,)).fetchall()
     return {r["ip"] for r in rows}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CVE alerts
+# ══════════════════════════════════════════════════════════════════
+
+def save_cve_alert(
+    cve_id: str,
+    severity: str,
+    score: float | None,
+    service: str,
+    ip: str,
+    summary: str,
+    impact: str | None,
+    network: str,
+    scan_id: int | None = None,
+) -> int | None:
+    """
+    Persist a CVE alert. Returns the row ID, or None if it already exists.
+    """
+    with _conn() as c:
+        try:
+            cur = c.execute(
+                """INSERT INTO cve_alerts
+                   (cve_id, severity, score, service, ip, summary, impact, network, scan_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (cve_id, severity, score, service, ip, summary, impact, network, scan_id),
+            )
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
+def get_cve_alerts(network: str | None = None, limit: int = 50) -> list[dict]:
+    """Return recent CVE alerts, optionally filtered by network."""
+    with _conn() as c:
+        if network:
+            rows = c.execute(
+                "SELECT * FROM cve_alerts WHERE network = ? ORDER BY created_at DESC LIMIT ?",
+                (network, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM cve_alerts ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_scan_with_services() -> dict | None:
+    """
+    Return the most recent scan that has hosts with open ports (not just 'Escudo intacto').
+
+    Returns dict with keys: id, network, scan_time, targets {ip: [port_entries]}.
+    """
+    with _conn() as c:
+        scans = c.execute("SELECT * FROM scans ORDER BY id DESC LIMIT 10").fetchall()
+        for scan in scans:
+            targets = _hosts_for_scan(c, scan["id"])
+            has_services = any(
+                ports and ports != ["Escudo intacto"] and not (ports and "Error" in ports[0])
+                for ports in targets.values()
+            )
+            if has_services:
+                d = dict(scan)
+                d["targets"] = targets
+                return d
+    return None
