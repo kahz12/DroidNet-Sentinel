@@ -1,5 +1,9 @@
 # DroidNet Sentinel
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Linux-green)
+
 > Autonomous WiFi network auditor built for Android (Termux) and Linux — powered by Nmap, Python, and Flask.
 
 DroidNet Sentinel is a modular, cross-platform network security toolkit that performs automated WiFi auditing directly from an Android device via Termux or any Linux machine. It discovers live hosts, performs deep port and service scans, classifies risk levels, looks up public exploits, cuts off unknown devices via ARP spoofing, and exposes a persistent web dashboard — all from a single unified CLI.
@@ -525,3 +529,9 @@ WiFi connected
 ---
 
 Developed with care by Ale.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE) — see the `LICENSE` file for details.
