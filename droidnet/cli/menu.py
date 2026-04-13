@@ -118,8 +118,8 @@ def _run_hunter() -> None:
 
 
 def _run_dashboard() -> None:
-    from droidnet.web.dashboard import app
-    rprint("[bold green][✓][/bold green] Dashboard en [cyan]http://127.0.0.1:5000[/cyan]")
+    from droidnet.web.dashboard import app, _print_startup_banner
+    _print_startup_banner()
     rprint("[dim]Ctrl+C para detener.[/dim]\n")
     try:
         app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)

@@ -5,10 +5,10 @@ Authentication:
     Session-based login (Flask sessions + HMAC credential check).
     Configure via environment variables:
         SENTINEL_USER   → username  (default: admin)
-        SENTINEL_PASS   → password  (default: sentinel)
+        SENTINEL_PASS   → password  (auto-generated if absent)
         SENTINEL_SECRET → Flask secret key (auto-generated if absent)
 
-    Change defaults before exposing to a network:
+    Set credentials before exposing to a network:
         export SENTINEL_USER="myuser"
         export SENTINEL_PASS="mypassword"
 
@@ -43,7 +43,14 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SENTINEL_SECRET") or secrets.token_hex(32)
 
 _USER = os.environ.get("SENTINEL_USER", "admin")
-_PASS = os.environ.get("SENTINEL_PASS", "sentinel")
+
+_PASS_FROM_ENV = os.environ.get("SENTINEL_PASS")
+if _PASS_FROM_ENV:
+    _PASS = _PASS_FROM_ENV
+    _GENERATED_PASS = False
+else:
+    _PASS = secrets.token_urlsafe(16)
+    _GENERATED_PASS = True
 
 # Initialise DB schema (idempotent — safe to call on every restart).
 init_db()
@@ -380,7 +387,18 @@ def api_scan_diff(scan_id: int):
 #  Standalone entry point
 # ══════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+def _print_startup_banner() -> None:
+    """Print server info and credential warnings at startup."""
     print("[*] Levantando servidor táctico con autenticación...")
-    print(f"[+] http://127.0.0.1:5000  (usuario: {_USER})")
+    if _GENERATED_PASS:
+        print(f"[!] SENTINEL_PASS no configurado — contraseña temporal generada.")
+        print(f"[+] Credenciales: usuario={_USER}  contraseña={_PASS}")
+        print(f"[!] Configura SENTINEL_PASS para producción:")
+        print(f"      export SENTINEL_PASS=\"tu_contraseña_segura\"")
+    else:
+        print(f"[+] http://127.0.0.1:5000  (usuario: {_USER})")
+
+
+if __name__ == "__main__":
+    _print_startup_banner()
     app.run(host="0.0.0.0", port=5000, debug=False)

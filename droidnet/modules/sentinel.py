@@ -189,6 +189,11 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
 #  Persistence
 # ══════════════════════════════════════════════════════════════════
 
+def _sanitize_ssid(ssid: str) -> str:
+    """Strip everything except word chars and hyphens to prevent path traversal."""
+    return re.sub(r'[^\w\-]', '_', ssid) or "unknown"
+
+
 def save_report(ssid: str, scan_data: dict) -> Path:
     """
     Save *scan_data* to reports/<SSID>_<timestamp>.json.
@@ -197,8 +202,13 @@ def save_report(ssid: str, scan_data: dict) -> Path:
         Path to the created file.
     """
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = REPORTS_DIR / f"{ssid.replace(' ', '_')}_{ts}.json"
+    ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_ssid = _sanitize_ssid(ssid)
+    filename  = REPORTS_DIR / f"{safe_ssid}_{ts}.json"
+
+    # Final guard: ensure resolved path is inside REPORTS_DIR.
+    if not filename.resolve().parent == REPORTS_DIR.resolve():
+        raise ValueError(f"Report path escapes REPORTS_DIR: {filename}")
 
     with filename.open("w") as fh:
         json.dump({"network": ssid, "time": ts, "targets": scan_data}, fh, indent=4)
