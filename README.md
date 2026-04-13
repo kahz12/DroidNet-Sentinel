@@ -96,7 +96,7 @@ main.py
   │   ├── sentinel.py      ← ping sweep + deep scan + ARP response + report save
   │   ├── hunter.py        ← exploit lookup via searchsploit
   │   ├── cve_watcher.py   ← CVE monitoring via NIST NVD API + impact analysis
-  │   ├── spoofer.py       ← ARP poisoning (bidirectional, dsniff)
+  │   ├── spoofer.py       ← ARP poisoning (bidirectional, arpspoof)
   │   └── deauther.py      ← 802.11 deauth frames (Scapy)
   │
   ├── droidnet/platform/
@@ -174,8 +174,8 @@ DroidNet-Sentinel/
 | Tool | Purpose | Required |
 |---|---|---|
 | `nmap` | Host discovery and port scanning | Yes |
-| `arpspoof` (dsniff) | ARP poisoning (Spoofer module) | Optional |
-| `searchsploit` (exploitdb) | Local exploit lookup (Hunter module) | Optional |
+| `arpspoof` (dsniff) | ARP poisoning (Spoofer module) | Optional — **Linux only** (not available on Termux) |
+| `searchsploit` (exploitdb) | Local exploit lookup (Hunter module) | Optional — see [note below](#exploitdb-on-termux) |
 | `scapy` | 802.11 deauthentication frames (Deauther module) | Optional |
 | `iw` / `airmon-ng` | Monitor mode management (Deauther module) | Optional |
 | `termux-api` | Notifications and WiFi info on Android | Android only |
@@ -185,6 +185,7 @@ DroidNet-Sentinel/
 ### Platform Notes
 
 - **Android:** Root access is required only for Spoofer and Deauther. The core Sentinel scanner runs without root.
+- **Spoofer on Android:** The `dsniff` package (which provides `arpspoof`) is **not available in Termux**. The Spoofer module only works on Linux. On Termux, menu option [5] will show an error explaining this limitation.
 - **Deauther on Android:** Most built-in Android WiFi chips do not support monitor mode injection. An external USB adapter with monitor mode support is required.
 - **WPA3 + MFP:** Deauthentication attacks are ineffective against access points with Management Frame Protection (MFP) enabled, as designed per the 802.11w standard.
 
@@ -199,10 +200,13 @@ DroidNet-Sentinel/
 pkg update && pkg upgrade
 
 # 2. Install system dependencies
-pkg install python nmap dsniff termux-api
+pkg install python nmap termux-api
 
-# 3. (Optional) Install exploit database
-pkg install exploitdb
+# 3. (Optional) Install exploit database for the Hunter module
+#    exploitdb is NOT available as a Termux package.
+#    Clone the repository manually instead:
+git clone https://gitlab.com/exploit-database/exploitdb.git
+ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
 
 # 4. Clone the repository
 git clone https://github.com/kahz12/DroidNet-Sentinel.git
@@ -368,7 +372,15 @@ The main scanning engine. Performs a full network audit cycle:
 
 Parses the most recent JSON scan report, extracts software names from Nmap version strings, and queries the local Exploit-DB via `searchsploit --json`. Displays up to 5 matching CVEs/exploits per service in the terminal.
 
-**Requires:** `exploitdb` package (`pkg install exploitdb` on Termux, `apt install exploitdb` on Debian/Kali).
+**Requires:** `searchsploit` (part of the exploitdb project).
+
+> <a id="exploitdb-on-termux"></a> **Termux:** `pkg install exploitdb` does **not** exist in Termux. You can use the official repository directly:
+> ```bash
+> git clone https://gitlab.com/exploit-database/exploitdb.git
+> ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
+> ```
+>
+> **Linux (Debian/Kali):** `sudo apt install exploitdb`
 
 ---
 
@@ -437,9 +449,11 @@ http://<device-ip>:5000
 
 `droidnet/modules/spoofer.py`
 
-Performs bidirectional ARP poisoning against a target using `arpspoof` (dsniff). Two daemon threads continuously send forged ARP replies — one to the target (impersonating the gateway) and one to the gateway (impersonating the target). Restores legitimate ARP entries on `Ctrl+C`.
+Performs bidirectional ARP poisoning against a target using `arpspoof`. Two daemon threads continuously send forged ARP replies — one to the target (impersonating the gateway) and one to the gateway (impersonating the target). Restores legitimate ARP entries on `Ctrl+C`.
 
-**Requires:** root, `dsniff` package.
+**Requires:** root, `arpspoof` (provided by the `dsniff` package on Linux: `sudo apt install dsniff`).
+
+> **Termux:** The `dsniff` package does not exist in Termux repositories. This module is **only available on Linux**.
 
 ```bash
 # Via interactive menu: option [5]

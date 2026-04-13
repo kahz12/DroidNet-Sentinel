@@ -1,10 +1,10 @@
 """
-ARP Poison Module — bidirectional ARP spoofing via arpspoof/dsniff.
+ARP Poison Module — bidirectional ARP spoofing via arpspoof.
 
 Why arpspoof and not Scapy?
     Scapy requires raw socket access at the kernel level. Android
-    blocks this even with root. arpspoof (part of dsniff) uses a
-    native implementation compatible with the Android kernel.
+    blocks this even with root. arpspoof uses a native implementation
+    compatible with the Android kernel.
 
 Attack flow:
     proc1: arpspoof -i <iface> -t <VICTIM>  <GATEWAY>
@@ -16,7 +16,8 @@ Attack flow:
 On Ctrl+C both processes are terminated; arpspoof sends legitimate
 ARP replies during shutdown, restoring the table on both sides.
 
-Install: pkg install dsniff
+NOTE: The dsniff package (which provides arpspoof) is NOT available
+in Termux. This module only works on Linux (apt install dsniff).
 """
 
 import shutil
@@ -46,7 +47,8 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
     """
     if not _arpspoof_available():
         rprint("[bold red][✗] arpspoof no encontrado.[/bold red]")
-        rprint("[dim]Instala con: pkg install dsniff[/dim]")
+        rprint("[dim]En Linux: sudo apt install dsniff[/dim]")
+        rprint("[dim]En Termux: no disponible (dsniff no existe como paquete Termux)[/dim]")
         return
 
     rprint(f"[bold red][☠][/bold red] Envenenando ARP...")

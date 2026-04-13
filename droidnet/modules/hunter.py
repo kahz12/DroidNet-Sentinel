@@ -5,8 +5,12 @@ Takes the most recent Sentinel JSON report and searches each detected
 service against the local Exploit-DB via searchsploit.
 
 Requires:
-    searchsploit — part of the exploitdb package
-    Termux: pkg install exploitdb
+    searchsploit — part of the exploitdb project
+    Linux: sudo apt install exploitdb
+    Termux: exploitdb is NOT available as a Termux package.
+            Clone the repository manually:
+              git clone https://gitlab.com/exploit-database/exploitdb.git
+              ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
     Update DB: searchsploit -u
 """
 
