@@ -266,7 +266,7 @@ If `config.json` does not exist, Sentinel runs with empty exclusion and trust li
 | `TELEGRAM_TOKEN` | Telegram Bot API token from BotFather | — |
 | `TELEGRAM_CHAT_ID` | Numeric Telegram chat ID to receive alerts | — |
 | `SENTINEL_USER` | Dashboard login username | `admin` |
-| `SENTINEL_PASS` | Dashboard login password | `sentinel` |
+| `SENTINEL_PASS` | Dashboard login password | auto-generated (printed once at startup) |
 | `SENTINEL_SECRET` | Flask session secret key (auto-generated if absent) | random |
 | `NVD_API_KEY` | NIST NVD API key for higher rate limits (CVE-Watcher) | — |
 
