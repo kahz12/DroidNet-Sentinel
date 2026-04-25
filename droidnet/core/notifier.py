@@ -28,7 +28,12 @@ def send_telegram(message: str) -> None:
     No-op when TELEGRAM_TOKEN is the placeholder string.
     Fails silently on network errors to avoid blocking the scan loop.
     """
-    if TELEGRAM_TOKEN == "TOKEN_DE_BOTFATHER":
+    if (
+        not TELEGRAM_TOKEN
+        or not TELEGRAM_CHAT_ID
+        or TELEGRAM_TOKEN == "TOKEN_DE_BOTFATHER"
+        or TELEGRAM_CHAT_ID == "ID_NUMERICO"
+    ):
         return
 
     url     = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"

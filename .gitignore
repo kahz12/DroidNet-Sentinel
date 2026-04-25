@@ -28,6 +28,9 @@ htmlcov/
 # ── Reportes generados (datos de red) ─────────────────────────────
 reports/
 
+# ── Informes de auditoría internos ────────────────────────────────
+INFORME_AUDITORIA.txt
+
 # ── Credenciales y configuración sensible ─────────────────────────
 .env
 *.env

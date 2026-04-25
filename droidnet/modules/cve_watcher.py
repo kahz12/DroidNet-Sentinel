@@ -19,7 +19,7 @@ Optional:
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from rich import print as rprint
@@ -133,8 +133,9 @@ def query_nvd(keyword: str, days_back: int = 120) -> list[dict]:
 
     Returns a list of simplified CVE dicts.
     """
-    pub_start = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000")
-    pub_end = datetime.utcnow().strftime("%Y-%m-%dT23:59:59.999")
+    now_utc = datetime.now(timezone.utc)
+    pub_start = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000")
+    pub_end = now_utc.strftime("%Y-%m-%dT23:59:59.999")
 
     params = {
         "keywordSearch": keyword,

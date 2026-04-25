@@ -28,7 +28,7 @@ from droidnet.config       import (
 )
 from droidnet.core.database  import init_db, save_scan
 from droidnet.core.notifier  import send_alert
-from droidnet.platform.utils import get_wifi_info
+from droidnet.platform.utils import get_default_iface, get_wifi_info
 
 # Ensure the database schema exists before any scan runs.
 init_db()
@@ -119,9 +119,12 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> list[str]:
     try:
         proc = subprocess.run(
             ["nmap", "-sn", subnet] + exclude_arg,
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=180,
         )
         return re.findall(r"Nmap scan report for (\d+\.\d+\.\d+\.\d+)", proc.stdout)
+    except subprocess.TimeoutExpired:
+        rprint("[yellow][-] ping_sweep agotó tiempo (180 s). Red lenta o muy poblada.[/yellow]")
+        return []
     except Exception:
         return []
 
@@ -140,10 +143,12 @@ def deep_scan(live_ips: list[str]) -> dict:
         try:
             proc = subprocess.run(
                 ["nmap", "-F", "-sV", "-T4", ip],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=120,
             )
             ports = re.findall(r"(\d+/tcp\s+open\s+.*)", proc.stdout)
             results[ip] = [p.strip() for p in ports] if ports else ["Escudo intacto"]
+        except subprocess.TimeoutExpired:
+            results[ip] = ["Error: timeout"]
         except Exception:
             results[ip] = ["Error"]
     return results
@@ -179,9 +184,10 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
         rprint("[dim][-] Sin desconocidos. Red limpia.[/dim]")
         return
 
+    iface = get_default_iface()
     for ip in unknown:
         rprint(f"[bold red][☠][/bold red] Desconocido: [cyan]{ip}[/cyan] — ejecutando corte ARP.")
-        t = threading.Thread(target=poison, args=(ip, gateway), daemon=True)
+        t = threading.Thread(target=poison, args=(ip, gateway, iface), daemon=True)
         t.start()
 
 

