@@ -94,16 +94,33 @@ def print_menu() -> None:
 #  Action wrappers
 # ══════════════════════════════════════════════════════════════════
 
+def _ask_auto_cut() -> bool:
+    """Pregunta si activar corte ARP automático. Por defecto NO (destructivo)."""
+    answer = Prompt.ask(
+        "[bold]¿Corte ARP automático a hosts no fiables?[/bold]",
+        choices=["s", "n"],
+        default="n",
+        show_choices=True,
+    )
+    return answer.lower() == "s"
+
+
 def _run_sentinel_interactive() -> None:
     from droidnet.modules.sentinel import run_sentinel
-    run_sentinel(interactive=True)
+    auto_cut = _ask_auto_cut()
+    run_sentinel(interactive=True, auto_cut=auto_cut)
 
 
 def _run_sentinel_daemon() -> None:
     from droidnet.modules.sentinel import run_sentinel
+    auto_cut = _ask_auto_cut()
     rprint("[bold yellow][!][/bold yellow] Iniciando Sentinel en modo daemon...")
     rprint("[dim]Ctrl+C para detener.[/dim]\n")
-    t = threading.Thread(target=run_sentinel, kwargs={"interactive": False}, daemon=True)
+    t = threading.Thread(
+        target=run_sentinel,
+        kwargs={"interactive": False, "auto_cut": auto_cut},
+        daemon=True,
+    )
     t.start()
     try:
         while t.is_alive():

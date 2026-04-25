@@ -21,7 +21,8 @@ from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
 
-# Port risk sets (mirrors sentinel.py — kept here to avoid circular import)
+# Port risk sets — single source of truth. sentinel.evaluate_risk reusa
+# classify_risk() y solo añade markup de Rich encima.
 _CRITICAL = {"21/tcp", "23/tcp", "445/tcp", "139/tcp", "3389/tcp"}
 _MEDIUM   = {"80/tcp", "8080/tcp", "53/tcp", "1900/tcp", "2049/tcp"}
 

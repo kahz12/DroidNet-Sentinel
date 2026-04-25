@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dashboard", action="store_true", help="Levantar dashboard web")
     parser.add_argument("--reports",   action="store_true", help="Listar reportes guardados")
     parser.add_argument("--cve-watch", action="store_true", help="Monitorear CVEs vs red escaneada")
+    parser.add_argument(
+        "--auto-cut",
+        action="store_true",
+        help="Combinar con --scan/--daemon: ejecuta corte ARP a hosts no fiables",
+    )
 
     parser.add_argument(
         "--spoof",
@@ -58,12 +63,12 @@ def handle_args(args: argparse.Namespace) -> bool:
     """
     if args.scan:
         from droidnet.modules.sentinel import run_sentinel
-        run_sentinel(interactive=True)
+        run_sentinel(interactive=True, auto_cut=args.auto_cut)
         return True
 
     if args.daemon:
         from droidnet.modules.sentinel import run_sentinel
-        run_sentinel(interactive=False)
+        run_sentinel(interactive=False, auto_cut=args.auto_cut)
         return True
 
     if args.hunt:

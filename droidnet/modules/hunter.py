@@ -73,13 +73,23 @@ def hunt_exploits(query: str) -> list[dict]:
             ["searchsploit", query, "--disable-colour", "-j"],
             capture_output=True,
             text=True,
+            timeout=30,
         )
-        if proc.returncode == 0 and proc.stdout:
-            data = json.loads(proc.stdout)
-            return data.get("RESULTS_EXPLOIT", [])
-    except Exception as exc:
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         rprint(f"[red]Error consultando Exploit-DB: {exc}[/red]")
-    return []
+        return []
+
+    if proc.returncode != 0 or not proc.stdout:
+        return []
+
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        # searchsploit antiguo o stderr mezclado en stdout: salida no-JSON.
+        rprint(f"[yellow]searchsploit devolvió salida no-JSON para '{query}': {exc}[/yellow]")
+        return []
+
+    return data.get("RESULTS_EXPLOIT", [])
 
 
 def run_hunter() -> None:

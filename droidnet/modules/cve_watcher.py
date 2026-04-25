@@ -27,7 +27,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from droidnet.config import REPORTS_DIR
 from droidnet.core.database import (
     init_db,
     get_latest_scan_with_services,

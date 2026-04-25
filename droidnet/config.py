@@ -49,7 +49,12 @@ def load_user_config() -> dict:
         dict: Parsed config, or safe defaults if the file does not exist.
     """
     defaults: dict = {"excluded_ips": [], "trusted_ips": []}
-    if CONFIG_FILE.exists():
+    if not CONFIG_FILE.exists():
+        return defaults
+    try:
         with CONFIG_FILE.open() as fh:
             return json.load(fh)
-    return defaults
+    except (json.JSONDecodeError, OSError) as exc:
+        # Un config.json corrupto no debe romper todos los escaneos.
+        print(f"[!] config.json inválido ({exc}); usando defaults.")
+        return defaults
