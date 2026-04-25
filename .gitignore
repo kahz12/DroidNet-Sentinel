@@ -28,6 +28,9 @@ htmlcov/
 # ── Reportes generados (datos de red) ─────────────────────────────
 reports/
 
+# ── Cache local NVD (CVE-Watcher) ─────────────────────────────────
+nvd_cache/
+
 # ── Informes de auditoría internos ────────────────────────────────
 INFORME_AUDITORIA.txt
 

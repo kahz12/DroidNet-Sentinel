@@ -19,10 +19,11 @@ from pathlib import Path
 # config.py lives at  <root>/droidnet/config.py
 # .parent       →     <root>/droidnet/
 # .parent.parent →    <root>/
-BASE_DIR    = Path(__file__).resolve().parent.parent
-REPORTS_DIR = BASE_DIR / "reports"
-CONFIG_FILE = BASE_DIR / "config.json"
-DB_PATH     = BASE_DIR / "sentinel.db"
+BASE_DIR      = Path(__file__).resolve().parent.parent
+REPORTS_DIR   = BASE_DIR / "reports"
+CONFIG_FILE   = BASE_DIR / "config.json"
+DB_PATH       = BASE_DIR / "sentinel.db"
+NVD_CACHE_DIR = BASE_DIR / "nvd_cache"
 
 # ── Daemon tuning ─────────────────────────────────────────────────
 CHECK_INTERVAL = 300  # seconds between daemon scan cycles

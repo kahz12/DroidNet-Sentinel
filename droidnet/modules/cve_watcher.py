@@ -16,10 +16,13 @@ Optional:
     Set NVD_API_KEY env var for higher rate limits.
 """
 
+import hashlib
+import json
 import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
 from rich import print as rprint
@@ -27,6 +30,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from droidnet.config import NVD_CACHE_DIR
 from droidnet.core.database import (
     init_db,
     get_latest_scan_with_services,
@@ -42,6 +46,107 @@ NVD_API_KEY = os.environ.get("NVD_API_KEY", "")
 
 # Delay between NVD requests to respect rate limits
 _REQUEST_DELAY = 6.5 if not NVD_API_KEY else 1.0
+
+# Backoff exponencial para 429/403 — base 1s, hasta ~16s, max 5 reintentos.
+_BACKOFF_MAX_RETRIES = 5
+_BACKOFF_BASE        = 1.0
+_BACKOFF_CAP         = 30.0
+
+# Cache local de respuestas NVD: archivo JSON por (query, día UTC).
+# TTL implícito 24h: la clave incluye YYYYMMDD, así que pasado el día
+# el archivo ya no se considera para la query del nuevo día.
+_CACHE_TTL_SECONDS = 24 * 3600
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CPE mapping (heuristic vendor:product → cpeName)
+# ══════════════════════════════════════════════════════════════════
+
+# Mapa estático para los servicios más comunes que aparecen en banners
+# nmap. Clave = product string en minúsculas (tras normalizar). Valor =
+# "vendor:product" en formato CPE 2.3. Se consulta antes de caer al
+# keywordSearch genérico.
+_PRODUCT_TO_CPE: dict[str, str] = {
+    "apache httpd":         "apache:http_server",
+    "apache":               "apache:http_server",
+    "nginx":                "nginx:nginx",
+    "openssh":              "openbsd:openssh",
+    "microsoft iis":        "microsoft:internet_information_services",
+    "iis":                  "microsoft:internet_information_services",
+    "mysql":                "mysql:mysql",
+    "mariadb":              "mariadb:mariadb",
+    "postgresql":           "postgresql:postgresql",
+    "vsftpd":               "vsftpd_project:vsftpd",
+    "proftpd":              "proftpd:proftpd",
+    "pure-ftpd":            "pureftpd:pure-ftpd",
+    "exim":                 "exim:exim",
+    "postfix":              "postfix:postfix",
+    "dovecot":              "dovecot:dovecot",
+    "samba smbd":           "samba:samba",
+    "samba":                "samba:samba",
+    "isc bind":             "isc:bind",
+    "bind":                 "isc:bind",
+    "dnsmasq":              "thekelleys:dnsmasq",
+    "lighttpd":             "lighttpd:lighttpd",
+    "redis":                "redis:redis",
+    "memcached":            "memcached:memcached",
+    "mongodb":              "mongodb:mongodb",
+    "elasticsearch":        "elastic:elasticsearch",
+}
+
+
+def build_cpe_name(product: str, version: str) -> str | None:
+    """
+    Construye un cpeName 2.3 a partir de (product, version) usando el mapa
+    estático. Devuelve None si no se conoce el vendor o falta versión.
+
+    NVD requiere la versión exacta para cpeName; sin ella el endpoint
+    rechaza la query, por lo que solo emitimos CPE si tenemos ambos.
+    """
+    if not version:
+        return None
+
+    key = product.strip().lower()
+    vendor_product = _PRODUCT_TO_CPE.get(key)
+    if not vendor_product:
+        return None
+
+    return f"cpe:2.3:a:{vendor_product}:{version}:*:*:*:*:*:*:*"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  NVD response cache (JSON por query+día UTC)
+# ══════════════════════════════════════════════════════════════════
+
+def _cache_path(query_id: str) -> Path:
+    """Ruta del archivo de cache para una query+día concreto."""
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    digest = hashlib.sha1(query_id.encode("utf-8")).hexdigest()[:16]
+    return NVD_CACHE_DIR / f"{digest}_{day}.json"
+
+
+def _cache_load(query_id: str) -> list[dict] | None:
+    """Devuelve el resultado cacheado si existe y es fresco (<24h)."""
+    path = _cache_path(query_id)
+    if not path.is_file():
+        return None
+    if (time.time() - path.stat().st_mtime) > _CACHE_TTL_SECONDS:
+        return None
+    try:
+        with path.open() as fh:
+            return json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _cache_store(query_id: str, results: list[dict]) -> None:
+    """Persiste *results* para *query_id* (best-effort, ignora errores I/O)."""
+    try:
+        NVD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with _cache_path(query_id).open("w") as fh:
+            json.dump(results, fh)
+    except OSError:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -126,44 +231,53 @@ def build_search_keywords(targets: dict) -> list[dict]:
 #  NVD API queries
 # ══════════════════════════════════════════════════════════════════
 
-def query_nvd(keyword: str, days_back: int = 120) -> list[dict]:
+def _nvd_get(params: dict, query_label: str) -> dict | None:
     """
-    Query NIST NVD for CVEs matching *keyword* published in the last *days_back* days.
+    GET con backoff exponencial frente a 429/403.
 
-    Returns a list of simplified CVE dicts.
+    Devuelve el JSON parseado o None si fallan todos los reintentos / la
+    petición acaba en error de red. Respeta Retry-After si NVD lo envía.
     """
-    now_utc = datetime.now(timezone.utc)
-    pub_start = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000")
-    pub_end = now_utc.strftime("%Y-%m-%dT23:59:59.999")
+    headers = {"apiKey": NVD_API_KEY} if NVD_API_KEY else {}
 
-    params = {
-        "keywordSearch": keyword,
-        "pubStartDate": pub_start,
-        "pubEndDate": pub_end,
-        "resultsPerPage": 10,
-    }
-
-    headers = {}
-    if NVD_API_KEY:
-        headers["apiKey"] = NVD_API_KEY
-
-    try:
-        resp = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
-        if resp.status_code == 403:
-            rprint("[yellow]  [-] NVD rate limit alcanzado. Esperando...[/yellow]")
-            time.sleep(30)
+    for attempt in range(_BACKOFF_MAX_RETRIES):
+        try:
             resp = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            rprint(f"[red]  [✗] Error red NVD ({query_label}): {exc}[/red]")
+            return None
 
-        if resp.status_code != 200:
-            rprint(f"[dim]  [-] NVD respondió {resp.status_code} para '{keyword}'[/dim]")
-            return []
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except ValueError as exc:
+                rprint(f"[red]  [✗] NVD devolvió JSON inválido ({query_label}): {exc}[/red]")
+                return None
 
-        data = resp.json()
-    except Exception as exc:
-        rprint(f"[red]  [✗] Error consultando NVD: {exc}[/red]")
-        return []
+        if resp.status_code in (429, 403):
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                delay = min(float(retry_after), _BACKOFF_CAP)
+            else:
+                delay = min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
+            rprint(
+                f"[yellow]  [-] NVD {resp.status_code} ({query_label}); "
+                f"backoff {delay:.1f}s (intento {attempt + 1}/{_BACKOFF_MAX_RETRIES})[/yellow]"
+            )
+            time.sleep(delay)
+            continue
 
-    results = []
+        # Otros códigos: no reintentar.
+        rprint(f"[dim]  [-] NVD respondió {resp.status_code} para '{query_label}'[/dim]")
+        return None
+
+    rprint(f"[red]  [✗] NVD: agotados los reintentos para '{query_label}'[/red]")
+    return None
+
+
+def _parse_nvd_payload(data: dict) -> list[dict]:
+    """Normaliza la respuesta NVD a la lista de CVEs simplificada."""
+    results: list[dict] = []
     for item in data.get("vulnerabilities", []):
         cve = item.get("cve", {})
         cve_id = cve.get("id", "?")
@@ -178,17 +292,66 @@ def query_nvd(keyword: str, days_back: int = 120) -> list[dict]:
             descs = cve.get("descriptions", [])
             desc = descs[0].get("value", "") if descs else ""
 
-        # Extract CVSS score and severity
         score, severity = _extract_cvss(cve)
 
         results.append({
-            "cve_id": cve_id,
+            "cve_id":      cve_id,
             "description": desc,
-            "score": score,
-            "severity": severity,
-            "published": cve.get("published", ""),
+            "score":       score,
+            "severity":    severity,
+            "published":   cve.get("published", ""),
         })
+    return results
 
+
+def query_nvd(
+    keyword: str,
+    days_back: int = 120,
+    cpe_name: str | None = None,
+) -> list[dict]:
+    """
+    Query NIST NVD for CVEs publicados en los últimos *days_back* días.
+
+    Si se aporta *cpe_name*, se usa el parámetro `cpeName` (CPE-search,
+    mucho más preciso). En su defecto cae a `keywordSearch`.
+
+    Resultados se cachean a disco por (query, día UTC) durante 24h para
+    evitar re-pegarle a NVD ante repeticiones del mismo día.
+    """
+    now_utc   = datetime.now(timezone.utc)
+    pub_start = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000")
+    pub_end   = now_utc.strftime("%Y-%m-%dT23:59:59.999")
+
+    if cpe_name:
+        params = {
+            "cpeName":        cpe_name,
+            "pubStartDate":   pub_start,
+            "pubEndDate":     pub_end,
+            "resultsPerPage": 10,
+        }
+        cache_key   = f"cpe:{cpe_name}:{days_back}"
+        query_label = cpe_name
+    else:
+        params = {
+            "keywordSearch":  keyword,
+            "pubStartDate":   pub_start,
+            "pubEndDate":     pub_end,
+            "resultsPerPage": 10,
+        }
+        cache_key   = f"kw:{keyword.lower()}:{days_back}"
+        query_label = keyword
+
+    cached = _cache_load(cache_key)
+    if cached is not None:
+        rprint(f"[dim]  [cache] {query_label}[/dim]")
+        return cached
+
+    data = _nvd_get(params, query_label)
+    if data is None:
+        return []
+
+    results = _parse_nvd_payload(data)
+    _cache_store(cache_key, results)
     return results
 
 
@@ -428,14 +591,19 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
     all_matches: list[dict] = []
 
     for i, kw in enumerate(keywords):
-        rprint(f"[bold cyan][\u2026][/bold cyan] Consultando NVD: [yellow]{kw['keyword']}[/yellow]")
+        cpe_name = build_cpe_name(kw["product"], kw["version"])
+        mode_tag = "CPE" if cpe_name else "keyword"
+        rprint(
+            f"[bold cyan][\u2026][/bold cyan] Consultando NVD ({mode_tag}): "
+            f"[yellow]{cpe_name or kw['keyword']}[/yellow]"
+        )
 
-        cves = query_nvd(kw["keyword"], days_back=days_back)
+        cves = query_nvd(kw["keyword"], days_back=days_back, cpe_name=cpe_name)
 
         if not cves:
-            # Try with just the product name (without version)
+            # Try with just the product name (without version, v\u00eda keyword)
             if kw["version"]:
-                rprint(f"  [dim]Reintentando con: {kw['product']}[/dim]")
+                rprint(f"  [dim]Reintentando con keyword: {kw['product']}[/dim]")
                 time.sleep(_REQUEST_DELAY)
                 cves = query_nvd(kw["product"], days_back=days_back)
 

@@ -2,22 +2,28 @@
 Exploit Lookup Module — cross-references scan results with Exploit-DB.
 
 Takes the most recent Sentinel JSON report and searches each detected
-service against the local Exploit-DB via searchsploit.
+service against the local Exploit-DB via searchsploit. Si searchsploit
+no está disponible, hace fallback a la API pública de Vulners.
 
 Requires:
-    searchsploit — part of the exploitdb project
+    searchsploit — part of the exploitdb project (recomendado)
     Linux: sudo apt install exploitdb
     Termux: exploitdb is NOT available as a Termux package.
             Clone the repository manually:
               git clone https://gitlab.com/exploit-database/exploitdb.git
               ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
     Update DB: searchsploit -u
+
+Fallback online: si searchsploit no se encuentra en PATH, se usa la API
+pública de Vulners (rate-limited, sin API key).
 """
 
 import json
 import os
+import shutil
 import subprocess
 
+import requests
 from rich           import print as rprint
 from rich.console   import Console
 from rich.table     import Table
@@ -25,6 +31,13 @@ from rich.table     import Table
 from droidnet.config import REPORTS_DIR
 
 console = Console()
+
+# Detect searchsploit una sola vez al cargar el módulo.
+_SEARCHSPLOIT_PATH: str | None = shutil.which("searchsploit")
+
+# Cache de queries para evitar N consultas idénticas cuando el mismo
+# servicio aparece en N hosts. Vive durante la ejecución del módulo.
+_EXPLOIT_CACHE: dict[str, list[dict]] = {}
 
 
 def get_latest_report() -> str | None:
@@ -58,16 +71,8 @@ def clean_service_name(raw_service: str) -> str | None:
     return query or None
 
 
-def hunt_exploits(query: str) -> list[dict]:
-    """
-    Run searchsploit and return matching exploits for *query*.
-
-    Uses -j for JSON output and --disable-colour to avoid ANSI codes
-    that break JSON parsing.
-
-    Returns:
-        List of exploit dicts, each with at least "Title" and "Path".
-    """
+def _hunt_exploits_local(query: str) -> list[dict]:
+    """Consulta searchsploit local. Devuelve lista de dicts de exploits."""
     try:
         proc = subprocess.run(
             ["searchsploit", query, "--disable-colour", "-j"],
@@ -76,7 +81,7 @@ def hunt_exploits(query: str) -> list[dict]:
             timeout=30,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        rprint(f"[red]Error consultando Exploit-DB: {exc}[/red]")
+        rprint(f"[red]Error consultando Exploit-DB local: {exc}[/red]")
         return []
 
     if proc.returncode != 0 or not proc.stdout:
@@ -85,11 +90,65 @@ def hunt_exploits(query: str) -> list[dict]:
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        # searchsploit antiguo o stderr mezclado en stdout: salida no-JSON.
         rprint(f"[yellow]searchsploit devolvió salida no-JSON para '{query}': {exc}[/yellow]")
         return []
 
     return data.get("RESULTS_EXPLOIT", [])
+
+
+def _hunt_exploits_online(query: str) -> list[dict]:
+    """
+    Fallback online vía API pública de Vulners (sin API key, rate-limited).
+
+    Normaliza la respuesta al mismo shape que searchsploit local:
+    [{"Title": ..., "Path": ..., "Date_Published": ...}]
+    """
+    try:
+        resp = requests.get(
+            "https://vulners.com/api/v3/search/lucene/",
+            params={"query": f"type:exploitdb AND {query}", "size": 10},
+            timeout=10,
+            headers={"User-Agent": "DroidNet-Sentinel"},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        rprint(f"[yellow]Fallback online falló para '{query}': {exc}[/yellow]")
+        return []
+
+    results: list[dict] = []
+    for item in payload.get("data", {}).get("search", []):
+        src = item.get("_source", {})
+        published = (src.get("published") or "")[:10]
+        results.append({
+            "Title":          src.get("title", "Desconocido"),
+            "Path":           src.get("href") or src.get("id", ""),
+            "Date_Published": published,
+        })
+    return results
+
+
+def hunt_exploits(query: str) -> list[dict]:
+    """
+    Run an exploit search for *query* y devuelve resultados ordenados
+    por fecha de publicación descendente (más recientes primero).
+
+    Usa searchsploit local si está disponible, si no cae al fallback
+    online (Vulners). Memoiza por query para evitar consultas duplicadas.
+    """
+    if query in _EXPLOIT_CACHE:
+        return _EXPLOIT_CACHE[query]
+
+    if _SEARCHSPLOIT_PATH:
+        results = _hunt_exploits_local(query)
+    else:
+        results = _hunt_exploits_online(query)
+
+    # Orden descendente por Date_Published; entradas sin fecha al final.
+    results.sort(key=lambda ex: ex.get("Date_Published") or "", reverse=True)
+
+    _EXPLOIT_CACHE[query] = results
+    return results
 
 
 def run_hunter() -> None:
@@ -100,6 +159,12 @@ def run_hunter() -> None:
     and service, queries Exploit-DB, and prints results to the terminal.
     """
     rprint("[bold red][☠][/bold red] Iniciando módulo DroidNet Hunter...")
+
+    if not _SEARCHSPLOIT_PATH:
+        rprint(
+            "[yellow][!] searchsploit no encontrado en PATH; "
+            "usando fallback online (Vulners, rate-limited).[/yellow]"
+        )
 
     latest = get_latest_report()
     if not latest:
@@ -127,11 +192,16 @@ def run_hunter() -> None:
 
             if exploits:
                 table = Table(show_header=True, header_style="bold red")
+                table.add_column("Fecha",         style="cyan",  width=12)
                 table.add_column("Exploit Title", style="white")
-                table.add_column("Path / EDB-ID", style="dim", justify="right")
+                table.add_column("Path / EDB-ID", style="dim",   justify="right")
 
                 for ex in exploits[:5]:
-                    table.add_row(ex.get("Title", "Desconocido"), ex.get("Path", ""))
+                    table.add_row(
+                        ex.get("Date_Published", "") or "—",
+                        ex.get("Title", "Desconocido"),
+                        ex.get("Path", ""),
+                    )
 
                 console.print(table)
 
