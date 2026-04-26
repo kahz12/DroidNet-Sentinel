@@ -17,6 +17,7 @@ Routes:
     POST /login              → authenticate and start session
     GET  /logout             → end session
     GET  /                   → HTML dashboard          (auth required)
+    GET  /help               → in-app help / user guide (auth required)
     GET  /api/reports        → raw JSON, all scans     (auth required)
     GET  /api/scan/<id>/diff → diff JSON for one scan  (auth required)
 
@@ -139,10 +140,6 @@ init_db()
 # ══════════════════════════════════════════════════════════════════
 #  Rate limiter for /login (5 attempts / min / IP)
 # ══════════════════════════════════════════════════════════════════
-#
-# If flask-limiter is available it is used; otherwise, in-memory
-# fallback based on a sliding window with a deque per IP. Sufficient
-# for a single process (the only mode supported by the dashboard today).
 
 _LOGIN_WINDOW_SEC = 60.0
 _LOGIN_MAX_TRIES  = 5
@@ -214,6 +211,125 @@ def login_required(f):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  Shared CSS — design system
+# ══════════════════════════════════════════════════════════════════
+#
+# Single source of truth for typography, palette and base layout so
+# the login, dashboard and help pages share a consistent look.
+
+_BASE_CSS = """
+:root {
+    --bg-deep:    #0a0e14;
+    --bg:         #0d1117;
+    --bg-soft:    #11161d;
+    --bg-card:    #161b22;
+    --bg-elev:    #1c222b;
+    --border:     #2a313c;
+    --border-mut: #1f242c;
+
+    --text:       #e6edf3;
+    --text-mut:   #8b949e;
+    --text-dim:   #6b7380;
+
+    --accent:     #58a6ff;
+    --accent-2:   #7ee2ff;
+    --ok:         #3fb950;
+    --warn:       #d29922;
+    --danger:     #f85149;
+    --info:       #79c0ff;
+
+    --radius:     10px;
+    --radius-sm:  6px;
+    --shadow:     0 8px 24px rgba(0,0,0,0.45);
+
+    --font-sans:  ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                  Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono:  ui-monospace, SFMono-Regular, "JetBrains Mono",
+                  "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    background: var(--bg-deep);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+body {
+    background:
+        radial-gradient(1200px 600px at 80% -10%,
+                        rgba(88,166,255,0.08), transparent 60%),
+        radial-gradient(900px 500px at -10% 110%,
+                        rgba(126,226,255,0.06), transparent 60%),
+        var(--bg-deep);
+    min-height: 100vh;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-2); }
+
+/* Top navigation, used on all authenticated pages. */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px;
+    background: rgba(13,17,23,0.85);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+}
+.brand {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 700; letter-spacing: 0.2px;
+}
+.brand .logo {
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 7px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #0a0e14;
+    font-weight: 800; font-size: 14px;
+}
+.brand .name  { color: var(--text); }
+.brand .ver   { color: var(--text-dim); font-weight: 400; font-size: 12px; }
+
+.nav { display: flex; align-items: center; gap: 6px; }
+.nav a, .nav button {
+    background: transparent; border: 1px solid transparent;
+    color: var(--text-mut);
+    padding: 7px 12px; border-radius: var(--radius-sm);
+    font: inherit; cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.nav a:hover, .nav button:hover {
+    color: var(--text); background: var(--bg-elev);
+    border-color: var(--border);
+}
+.nav a.active { color: var(--text); background: var(--bg-elev);
+                border-color: var(--border); }
+.nav .danger { color: var(--danger); }
+.nav .danger:hover { color: #fff; background: var(--danger);
+                     border-color: var(--danger); }
+
+.container { max-width: 1320px; margin: 0 auto; padding: 24px 28px 60px; }
+.page-header { margin-bottom: 22px; }
+.page-header h1 { font-size: 1.5rem; font-weight: 700; }
+.page-header p  { color: var(--text-mut); margin-top: 4px; font-size: 0.92rem; }
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+"""
+
+
+# ══════════════════════════════════════════════════════════════════
 #  HTML templates
 # ══════════════════════════════════════════════════════════════════
 
@@ -223,70 +339,111 @@ _LOGIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DroidNet Sentinel | Login</title>
+    <title>Sentinel · Sign in</title>
     <style>
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+""" + _BASE_CSS + """
         body {
-            font-family: 'Courier New', monospace;
-            background: #0d1117;
-            color: #c9d1d9;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+            padding: 24px;
         }
-        .card {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 40px;
-            width: 100%;
-            max-width: 360px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        .login-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 36px 32px;
+            width: 100%; max-width: 380px;
+            box-shadow: var(--shadow);
         }
-        h1 { color: #58a6ff; font-size: 1.4em; text-align: center; margin-bottom: 6px; }
-        .subtitle { color: #8b949e; font-size: 0.82em; text-align: center; margin-bottom: 28px; }
-        label { display: block; color: #8b949e; font-size: 0.82em; margin-bottom: 4px; }
-        input {
-            width: 100%; padding: 10px 12px;
-            background: #0d1117; border: 1px solid #30363d;
-            border-radius: 6px; color: #c9d1d9;
-            font-family: inherit; font-size: 0.95em;
-            margin-bottom: 16px; outline: none;
-            transition: border-color 0.2s;
+        .login-head {
+            text-align: center; margin-bottom: 28px;
         }
-        input:focus { border-color: #58a6ff; }
-        button {
-            width: 100%; padding: 10px;
-            background: #238636; color: #fff;
-            border: none; border-radius: 6px;
-            font-family: inherit; font-size: 1em;
-            cursor: pointer; transition: background 0.2s;
+        .login-head .logo {
+            width: 52px; height: 52px;
+            margin: 0 auto 14px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 14px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #0a0e14; font-weight: 800; font-size: 22px;
+            box-shadow: 0 8px 22px rgba(88,166,255,0.25);
         }
-        button:hover { background: #2ea043; }
+        .login-head h1 {
+            font-size: 1.2rem; letter-spacing: 0.2px;
+        }
+        .login-head p {
+            color: var(--text-mut); font-size: 0.85rem; margin-top: 4px;
+        }
+        label {
+            display: block;
+            color: var(--text-mut);
+            font-size: 0.78rem; letter-spacing: 0.6px;
+            text-transform: uppercase;
+            margin: 14px 0 6px;
+        }
+        input[type=text], input[type=password] {
+            width: 100%; padding: 11px 13px;
+            background: var(--bg-deep);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text);
+            font: inherit;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(88,166,255,0.18);
+        }
+        button.primary {
+            width: 100%; margin-top: 22px; padding: 11px;
+            background: linear-gradient(135deg, var(--accent), #4a92e8);
+            color: #fff; border: none;
+            border-radius: var(--radius-sm);
+            font: inherit; font-weight: 600;
+            cursor: pointer;
+            transition: filter 0.15s, transform 0.05s;
+        }
+        button.primary:hover  { filter: brightness(1.08); }
+        button.primary:active { transform: translateY(1px); }
         .error {
-            background: #3d1a1a; border: 1px solid #f85149;
-            border-radius: 6px; color: #f85149;
-            padding: 10px; font-size: 0.82em;
-            margin-bottom: 16px; text-align: center;
+            background: rgba(248,81,73,0.10);
+            border: 1px solid rgba(248,81,73,0.55);
+            color: #ff8d85;
+            padding: 10px 12px; border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+        }
+        .footnote {
+            text-align: center;
+            color: var(--text-dim); font-size: 0.78rem;
+            margin-top: 22px;
         }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>🛡️ DroidNet Sentinel</h1>
-        <p class="subtitle">Command Center — Restricted Access</p>
+    <form class="login-card" method="POST" action="{{ url_for('login') }}">
+        <div class="login-head">
+            <div class="logo">S</div>
+            <h1>Sentinel Command Center</h1>
+            <p>Sign in to continue</p>
+        </div>
+
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
-        <form method="POST" action="{{ url_for('login') }}">
-            <input type="hidden" name="next"   value="{{ next_url }}">
-            <input type="hidden" name="_csrf"  value="{{ csrf_token }}">
-            <label for="u">Username</label>
-            <input type="text"     id="u" name="username" autocomplete="username" autofocus>
-            <label for="p">Password</label>
-            <input type="password" id="p" name="password" autocomplete="current-password">
-            <button type="submit">Log in</button>
-        </form>
-    </div>
+
+        <input type="hidden" name="next"  value="{{ next_url }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+        <label for="u">Username</label>
+        <input id="u" type="text" name="username"
+               autocomplete="username" autofocus>
+
+        <label for="p">Password</label>
+        <input id="p" type="password" name="password"
+               autocomplete="current-password">
+
+        <button class="primary" type="submit">Sign in</button>
+
+        <p class="footnote">Authorised use only.</p>
+    </form>
 </body>
 </html>
 """
@@ -297,172 +454,625 @@ _DASHBOARD_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DroidNet Sentinel | Command Center</title>
+    <title>Sentinel · Dashboard</title>
     <style>
-        *, *::before, *::after { box-sizing: border-box; }
-        body {
-            font-family: 'Courier New', Courier, monospace;
-            background: #0d1117; color: #c9d1d9;
-            padding: 20px; margin: 0;
+""" + _BASE_CSS + """
+        .summary {
+            display: grid; gap: 14px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            margin-bottom: 22px;
         }
-        header {
-            display: flex; justify-content: space-between; align-items: center;
-            border-bottom: 1px solid #30363d; padding-bottom: 12px; margin-bottom: 4px;
+        .stat {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 16px;
         }
-        h1 { color: #58a6ff; font-size: 1.5em; }
-        .subtitle { color: #8b949e; font-size: 0.85em; margin-bottom: 20px; }
-        .logout {
-            background: #21262d; border: 1px solid #30363d;
-            color: #c9d1d9; padding: 6px 14px; border-radius: 6px;
-            font-family: inherit; font-size: 0.82em;
-            text-decoration: none; cursor: pointer;
+        .stat .label {
+            color: var(--text-mut); font-size: 0.75rem;
+            letter-spacing: 0.7px; text-transform: uppercase;
         }
-        .logout:hover { background: #30363d; }
+        .stat .value {
+            margin-top: 4px;
+            font-size: 1.5rem; font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        .stat.ok    .value { color: var(--ok);     }
+        .stat.warn  .value { color: var(--warn);   }
+        .stat.bad   .value { color: var(--danger); }
+        .stat.info  .value { color: var(--info);   }
+
+        .legend {
+            display: flex; flex-wrap: wrap; gap: 14px;
+            background: var(--bg-soft);
+            border: 1px dashed var(--border);
+            color: var(--text-mut);
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 0.82rem;
+            margin-bottom: 22px;
+        }
+        .legend .dot {
+            display: inline-block; width: 10px; height: 10px;
+            border-radius: 50%; margin-right: 6px;
+            vertical-align: middle;
+        }
+        .legend .dot.r-critico { background: var(--danger); }
+        .legend .dot.r-medio   { background: var(--warn);   }
+        .legend .dot.r-bajo    { background: var(--info);   }
+        .legend .dot.r-minimo  { background: var(--ok);     }
+        .legend .help-link { margin-left: auto; }
+
         .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 20px;
+            display: grid; gap: 18px;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
         }
-        .card {
-            background: #161b22; border: 1px solid #30363d;
-            border-radius: 8px; padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+
+        .scan {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            display: flex; flex-direction: column;
+            overflow: hidden;
         }
-        .card-title { font-size: 1.05em; color: #e6edf3; font-weight: bold; margin-bottom: 4px; }
-        .meta {
-            font-size: 0.82em; color: #8b949e;
-            border-bottom: 1px dashed #30363d;
-            padding-bottom: 10px; margin-bottom: 12px;
+        .scan-head {
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid var(--border-mut);
         }
+        .scan-net {
+            display: flex; align-items: baseline; gap: 8px;
+            font-weight: 700; font-size: 1rem;
+        }
+        .scan-net .label { color: var(--text-mut); font-weight: 500;
+                           font-size: 0.78rem; text-transform: uppercase;
+                           letter-spacing: 0.7px; }
+        .scan-meta {
+            color: var(--text-mut); font-size: 0.82rem;
+            margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap;
+        }
+        .scan-meta .pill {
+            display: inline-flex; align-items: center;
+            background: var(--bg-elev);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 2px 9px; font-size: 0.74rem;
+        }
+        .scan-meta .pill.new  { color: var(--warn);
+                                border-color: rgba(210,153,34,0.5); }
+        .scan-meta .pill.gone { color: var(--danger);
+                                border-color: rgba(248,81,73,0.5); }
+
+        .scan-body { padding: 6px 16px 16px; }
+
         .host {
-            background: #0d1117; margin-top: 8px;
-            border-left: 3px solid #238636; padding: 10px;
-            border-radius: 0 4px 4px 0;
+            background: var(--bg-deep);
+            border-left: 3px solid var(--ok);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            padding: 10px 12px;
+            margin-top: 10px;
         }
-        .host.vuln { border-left-color: #f85149; }
-        .host.new  { border-left-color: #d29922; }
-        .ip { font-weight: bold; color: #79c0ff; }
-        .port-ok   { color: #3fb950; font-size: 0.82em; }
-        .port-bad  { color: #ff7b72; font-size: 0.82em; }
+        .host.vuln { border-left-color: var(--danger); }
+        .host.new  { border-left-color: var(--warn);   }
+
+        .host-head {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .ip {
+            font-family: var(--font-mono);
+            font-weight: 700;
+            color: var(--info);
+        }
         .badge {
-            display: inline-block; font-size: 0.68em;
-            padding: 1px 6px; border-radius: 10px;
-            margin-left: 6px; vertical-align: middle;
+            display: inline-block; font-size: 0.68rem;
+            font-weight: 600; letter-spacing: 0.5px;
+            padding: 2px 8px; border-radius: 999px;
+            text-transform: uppercase;
         }
-        .badge-new  { background: #3d2a00; color: #d29922; border: 1px solid #d29922; }
+        .badge-new {
+            color: var(--warn);
+            background: rgba(210,153,34,0.12);
+            border: 1px solid rgba(210,153,34,0.5);
+        }
         .risk {
-            font-size: 0.72em; font-weight: bold;
-            margin-left: 4px; vertical-align: middle;
+            font-size: 0.72rem; font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 2px 8px; border-radius: 999px;
+            text-transform: uppercase;
         }
-        .r-critico { color: #f85149; }
-        .r-medio   { color: #d29922; }
-        .r-bajo    { color: #58a6ff; }
-        .r-minimo  { color: #3fb950; }
+        .r-critico { color: var(--danger);
+                     background: rgba(248,81,73,0.12);
+                     border: 1px solid rgba(248,81,73,0.5); }
+        .r-medio   { color: var(--warn);
+                     background: rgba(210,153,34,0.12);
+                     border: 1px solid rgba(210,153,34,0.5); }
+        .r-bajo    { color: var(--info);
+                     background: rgba(121,192,255,0.12);
+                     border: 1px solid rgba(121,192,255,0.5); }
+        .r-minimo  { color: var(--ok);
+                     background: rgba(63,185,80,0.12);
+                     border: 1px solid rgba(63,185,80,0.5); }
+
+        .ports { margin-top: 8px; font-family: var(--font-mono);
+                 font-size: 0.82rem; color: var(--text-mut); }
+        .ports .ok-line  { color: var(--ok);  display: block; }
+        .ports .bad-line { color: #ff7b72;    display: block; }
+
         .diff-box {
-            margin-top: 8px; padding: 8px;
-            background: #161b22; border-radius: 4px; font-size: 0.78em;
-            border: 1px solid #30363d;
+            margin-top: 10px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border-mut);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-size: 0.78rem;
+            font-family: var(--font-mono);
         }
-        .diff-label { color: #8b949e; margin-bottom: 3px; }
-        .added   { color: #3fb950; }
-        .removed { color: #f85149; }
-        .gone-list { margin-top: 10px; font-size: 0.78em; color: #8b949e; }
+        .diff-box .diff-label {
+            color: var(--text-mut); margin-bottom: 4px;
+            font-family: var(--font-sans); font-size: 0.72rem;
+            text-transform: uppercase; letter-spacing: 0.6px;
+        }
+        .added   { color: var(--ok);     display: block; }
+        .removed { color: var(--danger); display: block; }
+
+        .gone-list {
+            margin-top: 14px;
+            font-size: 0.78rem; color: var(--text-mut);
+            border-top: 1px dashed var(--border-mut);
+            padding-top: 10px;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-mut);
+        }
+        .empty .big { font-size: 2rem; margin-bottom: 10px; }
+        .empty a {
+            display: inline-block; margin-top: 14px;
+            background: var(--bg-elev); border: 1px solid var(--border);
+            color: var(--text); padding: 8px 14px;
+            border-radius: var(--radius-sm);
+        }
+
         .pager {
             display: flex; justify-content: center; align-items: center;
-            gap: 16px; margin-top: 24px; font-size: 0.85em; color: #8b949e;
+            gap: 14px; margin-top: 28px;
+            color: var(--text-mut); font-size: 0.9rem;
         }
         .pager a, .pager span.disabled {
-            background: #21262d; border: 1px solid #30363d;
-            color: #c9d1d9; padding: 6px 12px; border-radius: 6px;
-            text-decoration: none;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 7px 12px; border-radius: var(--radius-sm);
         }
-        .pager span.disabled { color: #484f58; cursor: not-allowed; }
-        .pager a:hover { background: #30363d; }
+        .pager span.disabled { color: var(--text-dim); cursor: not-allowed; }
+        .pager a:hover { background: var(--bg-elev); }
     </style>
 </head>
 <body>
-    <header>
-        <h1>🛡️ Sentinel Command Center</h1>
-        <a href="{{ url_for('logout') }}" class="logout">Log out</a>
-    </header>
-    <p class="subtitle">Network audit history. <i>Powered by DroidNet.</i></p>
-
-    <div class="grid">
-    {% for scan in scans %}
-        <div class="card">
-            <div class="card-title">Network: {{ scan.network }}</div>
-            <div class="meta">
-                Scan: {{ scan.scan_time }}<br>
-                Devices: {{ scan.total_devices }}
-                {% if scan.new_ips %}
-                  &middot; <span style="color:#d29922">{{ scan.new_ips|length }} new</span>
-                {% endif %}
-                {% if scan.gone_ips %}
-                  &middot; <span style="color:#f85149">{{ scan.gone_ips|length }} disappeared</span>
-                {% endif %}
-            </div>
-
-            {% for ip, ports in scan.targets.items() %}
-                {% set risk    = scan.risks.get(ip, 'MÍNIMO') %}
-                {% set is_new  = ip in scan.new_ips %}
-                {% set is_vuln = risk in ('CRÍTICO', 'MEDIO', 'BAJO') %}
-                <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% endif %}">
-                    <span class="ip">{{ ip }}</span>
-                    {% if is_new %}<span class="badge badge-new">NEW</span>{% endif %}
-                    <span class="risk
-                        {% if risk == 'CRÍTICO' %}r-critico
-                        {% elif risk == 'MEDIO'  %}r-medio
-                        {% elif risk == 'BAJO'   %}r-bajo
-                        {% else %}r-minimo{% endif %}">
-                        [{{ risk }}]
-                    </span><br>
-
-                    {% for port in ports %}
-                        {% if is_vuln %}
-                            <span class="port-bad">⚠ {{ port }}</span><br>
-                        {% else %}
-                            <span class="port-ok">✓ {{ port }}</span><br>
-                        {% endif %}
-                    {% endfor %}
-
-                    {% if ip in scan.port_changes %}
-                    <div class="diff-box">
-                        <div class="diff-label">Port changes:</div>
-                        {% for p in scan.port_changes[ip].added %}
-                            <span class="added">+ {{ p }}</span><br>
-                        {% endfor %}
-                        {% for p in scan.port_changes[ip].removed %}
-                            <span class="removed">- {{ p }}</span><br>
-                        {% endfor %}
-                    </div>
-                    {% endif %}
-                </div>
-            {% endfor %}
-
-            {% if scan.gone_ips %}
-            <div class="gone-list">Disappeared: {{ scan.gone_ips | join(', ') }}</div>
-            {% endif %}
+    <nav class="topbar">
+        <div class="brand">
+            <span class="logo">S</span>
+            <span class="name">Sentinel</span>
+            <span class="ver">Command Center</span>
         </div>
-    {% else %}
-        <p>No scans in the database. Run a scan first.</p>
-    {% endfor %}
-    </div>
-
-    {% if total_pages > 1 %}
-    <nav class="pager">
-        {% if has_prev %}
-            <a href="{{ url_for('index', page=page-1, per_page=per_page) }}">← Previous</a>
-        {% else %}
-            <span class="disabled">← Previous</span>
-        {% endif %}
-        <span>Page {{ page }} / {{ total_pages }} &middot; {{ total }} scans</span>
-        {% if has_next %}
-            <a href="{{ url_for('index', page=page+1, per_page=per_page) }}">Next →</a>
-        {% else %}
-            <span class="disabled">Next →</span>
-        {% endif %}
+        <div class="nav">
+            <a class="active" href="{{ url_for('index') }}">Dashboard</a>
+            <a href="{{ url_for('help_page') }}">Help</a>
+            <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
+        </div>
     </nav>
-    {% endif %}
+
+    <main class="container">
+        <div class="page-header">
+            <h1>Network audit history</h1>
+            <p>Recent scans, diffs and risk assessment for every host on the
+               networks you have audited.</p>
+        </div>
+
+        <section class="summary">
+            <div class="stat info"><div class="label">Total scans</div>
+                 <div class="value">{{ total }}</div></div>
+            <div class="stat warn"><div class="label">New hosts (page)</div>
+                 <div class="value">{{ stats.new_count }}</div></div>
+            <div class="stat bad"><div class="label">Critical hosts (page)</div>
+                 <div class="value">{{ stats.crit_count }}</div></div>
+            <div class="stat ok"><div class="label">Page</div>
+                 <div class="value">{{ page }} / {{ total_pages }}</div></div>
+        </section>
+
+        <div class="legend">
+            <span><span class="dot r-critico"></span>Critical — high-risk service</span>
+            <span><span class="dot r-medio"></span>Medium — exposed service</span>
+            <span><span class="dot r-bajo"></span>Low — open ports, low impact</span>
+            <span><span class="dot r-minimo"></span>Minimal — no open ports</span>
+            <a class="help-link" href="{{ url_for('help_page') }}">What does this mean?</a>
+        </div>
+
+        <div class="grid">
+        {% for scan in scans %}
+            <article class="scan">
+                <header class="scan-head">
+                    <div class="scan-net">
+                        <span class="label">Network</span>
+                        <span>{{ scan.network }}</span>
+                    </div>
+                    <div class="scan-meta">
+                        <span>{{ scan.scan_time }}</span>
+                        <span class="pill">{{ scan.total_devices }} devices</span>
+                        {% if scan.new_ips %}
+                            <span class="pill new">+{{ scan.new_ips|length }} new</span>
+                        {% endif %}
+                        {% if scan.gone_ips %}
+                            <span class="pill gone">-{{ scan.gone_ips|length }} gone</span>
+                        {% endif %}
+                    </div>
+                </header>
+
+                <div class="scan-body">
+                {% for ip, ports in scan.targets.items() %}
+                    {% set risk    = scan.risks.get(ip, 'MÍNIMO') %}
+                    {% set is_new  = ip in scan.new_ips %}
+                    {% set is_vuln = risk in ('CRÍTICO', 'MEDIO', 'BAJO') %}
+                    <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% endif %}">
+                        <div class="host-head">
+                            <span class="ip">{{ ip }}</span>
+                            {% if is_new %}<span class="badge badge-new">new</span>{% endif %}
+                            <span class="risk
+                                {% if risk == 'CRÍTICO' %}r-critico
+                                {% elif risk == 'MEDIO'  %}r-medio
+                                {% elif risk == 'BAJO'   %}r-bajo
+                                {% else %}r-minimo{% endif %}">{{ risk }}</span>
+                        </div>
+
+                        <div class="ports">
+                        {% for port in ports %}
+                            {% if is_vuln %}
+                                <span class="bad-line">! {{ port }}</span>
+                            {% else %}
+                                <span class="ok-line">+ {{ port }}</span>
+                            {% endif %}
+                        {% endfor %}
+                        </div>
+
+                        {% if ip in scan.port_changes %}
+                        <div class="diff-box">
+                            <div class="diff-label">Port changes since last scan</div>
+                            {% for p in scan.port_changes[ip].added %}
+                                <span class="added">+ {{ p }}</span>
+                            {% endfor %}
+                            {% for p in scan.port_changes[ip].removed %}
+                                <span class="removed">- {{ p }}</span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+
+                {% if scan.gone_ips %}
+                <div class="gone-list">
+                    Disappeared since last scan: {{ scan.gone_ips | join(', ') }}
+                </div>
+                {% endif %}
+                </div>
+            </article>
+        {% else %}
+            <div class="empty">
+                <div class="big">No scans yet</div>
+                <p>The database is empty. Run a Sentinel scan to populate it.</p>
+                <a href="{{ url_for('help_page') }}">Open the user guide</a>
+            </div>
+        {% endfor %}
+        </div>
+
+        {% if total_pages > 1 %}
+        <nav class="pager">
+            {% if has_prev %}
+                <a href="{{ url_for('index', page=page-1, per_page=per_page) }}">← Previous</a>
+            {% else %}
+                <span class="disabled">← Previous</span>
+            {% endif %}
+            <span>Page {{ page }} of {{ total_pages }} · {{ total }} scans</span>
+            {% if has_next %}
+                <a href="{{ url_for('index', page=page+1, per_page=per_page) }}">Next →</a>
+            {% else %}
+                <span class="disabled">Next →</span>
+            {% endif %}
+        </nav>
+        {% endif %}
+    </main>
+</body>
+</html>
+"""
+
+_HELP_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel · Help</title>
+    <style>
+""" + _BASE_CSS + """
+        .layout {
+            display: grid;
+            grid-template-columns: 240px 1fr;
+            gap: 28px;
+        }
+        @media (max-width: 800px) {
+            .layout { grid-template-columns: 1fr; }
+        }
+        .toc {
+            position: sticky; top: 80px;
+            align-self: start;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px;
+            font-size: 0.88rem;
+        }
+        .toc h3 {
+            font-size: 0.72rem; letter-spacing: 0.7px;
+            text-transform: uppercase;
+            color: var(--text-mut); margin-bottom: 8px;
+        }
+        .toc a {
+            display: block;
+            color: var(--text-mut);
+            padding: 6px 8px;
+            border-radius: var(--radius-sm);
+        }
+        .toc a:hover { background: var(--bg-elev); color: var(--text); }
+
+        .doc section {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 22px 24px;
+            margin-bottom: 18px;
+            scroll-margin-top: 80px;
+        }
+        .doc h2 { font-size: 1.15rem; margin-bottom: 10px; }
+        .doc h3 { font-size: 0.95rem; margin: 16px 0 6px; color: var(--text); }
+        .doc p, .doc li { color: var(--text-mut); margin-bottom: 8px; }
+        .doc ul { padding-left: 22px; }
+        .doc strong { color: var(--text); }
+        .doc code {
+            font-family: var(--font-mono);
+            background: var(--bg-deep);
+            border: 1px solid var(--border-mut);
+            color: var(--accent-2);
+            padding: 1px 6px; border-radius: 4px;
+            font-size: 0.86em;
+        }
+        .doc .kbd {
+            font-family: var(--font-mono);
+            background: var(--bg-elev);
+            border: 1px solid var(--border);
+            border-bottom-width: 2px;
+            color: var(--text);
+            padding: 1px 6px; border-radius: 5px;
+            font-size: 0.82em;
+        }
+        .risk-table {
+            width: 100%; border-collapse: collapse; margin-top: 10px;
+            font-size: 0.88rem;
+        }
+        .risk-table th, .risk-table td {
+            text-align: left; padding: 8px 10px;
+            border-bottom: 1px solid var(--border-mut);
+        }
+        .risk-table th { color: var(--text-mut); font-weight: 600;
+                         font-size: 0.78rem; text-transform: uppercase;
+                         letter-spacing: 0.6px; }
+        .risk-table td { color: var(--text); }
+        .risk-table .pill {
+            display: inline-block; padding: 2px 8px;
+            border-radius: 999px; font-size: 0.72rem;
+            font-weight: 700; letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .feat-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px; margin-top: 8px;
+        }
+        .feat {
+            background: var(--bg-soft);
+            border: 1px solid var(--border-mut);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+        }
+        .feat h4 { color: var(--text); font-size: 0.95rem;
+                   margin-bottom: 4px; }
+        .feat p  { color: var(--text-mut); font-size: 0.85rem; margin: 0; }
+    </style>
+</head>
+<body>
+    <nav class="topbar">
+        <div class="brand">
+            <span class="logo">S</span>
+            <span class="name">Sentinel</span>
+            <span class="ver">Command Center</span>
+        </div>
+        <div class="nav">
+            <a href="{{ url_for('index') }}">Dashboard</a>
+            <a class="active" href="{{ url_for('help_page') }}">Help</a>
+            <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="page-header">
+            <h1>User guide</h1>
+            <p>How Sentinel works, how to read this dashboard, and how to use
+               every feature responsibly.</p>
+        </div>
+
+        <div class="layout">
+            <aside class="toc">
+                <h3>On this page</h3>
+                <a href="#overview">Overview</a>
+                <a href="#workflow">Typical workflow</a>
+                <a href="#features">Features</a>
+                <a href="#dashboard">Reading the dashboard</a>
+                <a href="#risk">Risk levels</a>
+                <a href="#api">API endpoints</a>
+                <a href="#security">Security & ethics</a>
+            </aside>
+
+            <div class="doc">
+                <section id="overview">
+                    <h2>What is Sentinel?</h2>
+                    <p><strong>DroidNet Sentinel</strong> is a network-security
+                       toolkit that audits the Wi-Fi networks you own or are
+                       authorised to test. It discovers live hosts, fingerprints
+                       open services, classifies risk, and tracks how the
+                       network changes over time.</p>
+                    <p>The CLI is the operator's surface; this web dashboard is
+                       the read-only view of the audit history stored in
+                       <code>sentinel.db</code>.</p>
+                </section>
+
+                <section id="workflow">
+                    <h2>Typical workflow</h2>
+                    <ol style="padding-left: 22px; color: var(--text-mut);">
+                        <li>Connect to the network you want to audit.</li>
+                        <li>Run <code>python main.py scan</code> (one-shot) or
+                            <code>python main.py daemon</code> (continuous).</li>
+                        <li>Open this dashboard to review the findings.</li>
+                        <li>Use <code>python main.py hunt</code> to look up
+                            known exploits for the services you found.</li>
+                        <li>Use <code>python main.py cve</code> to check the
+                            scan against recent CVEs.</li>
+                    </ol>
+                </section>
+
+                <section id="features">
+                    <h2>Features</h2>
+                    <div class="feat-list">
+                        <div class="feat">
+                            <h4>Sentinel — Network scan</h4>
+                            <p>Discovers live hosts, performs an Nmap-style port
+                               scan and stores results in the database.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>Daemon mode</h4>
+                            <p>Runs Sentinel in the background on a fixed cadence
+                               and emits Telegram alerts when something changes.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>Hunter</h4>
+                            <p>Cross-references the latest scan against the
+                               local Exploit-DB index via <code>searchsploit</code>.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>CVE Watcher</h4>
+                            <p>Fingerprints services and queries the NVD for
+                               relevant CVEs published recently.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>Spoofer (ARP)</h4>
+                            <p>Manual ARP-poisoning tool for cutting access to
+                               an IP. <strong>Authorised use only.</strong></p>
+                        </div>
+                        <div class="feat">
+                            <h4>Deauther (802.11)</h4>
+                            <p>Sends 802.11 deauth frames against a target or
+                               broadcast. Requires monitor mode and root.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="dashboard">
+                    <h2>Reading the dashboard</h2>
+                    <p>Each card represents one scan of one network. Hosts are
+                       coloured by risk and decorated with badges:</p>
+                    <ul>
+                        <li><strong>Network</strong> — the SSID or CIDR of the
+                            audited segment.</li>
+                        <li><strong>Devices</strong> — total hosts that responded
+                            in this scan.</li>
+                        <li><span class="badge badge-new">new</span> — host
+                            seen for the first time vs the previous scan of
+                            the same network.</li>
+                        <li><strong>Disappeared</strong> — host that was present
+                            in the previous scan and is missing now.</li>
+                        <li><strong>Port changes</strong> — diff of open services
+                            between this scan and the previous one
+                            (<span class="added" style="color:var(--ok)">+ added</span> /
+                            <span class="removed" style="color:var(--danger)">- removed</span>).</li>
+                    </ul>
+                    <p>Press <span class="kbd">Ctrl</span> + <span class="kbd">F</span>
+                       to filter visible cards by IP or by service banner.</p>
+                </section>
+
+                <section id="risk">
+                    <h2>Risk levels</h2>
+                    <p>Sentinel assigns one risk label per host based on the
+                       set of open TCP ports it found:</p>
+                    <table class="risk-table">
+                        <tr><th>Label</th><th>Trigger</th><th>What it means</th></tr>
+                        <tr>
+                            <td><span class="pill r-critico">CRÍTICO</span></td>
+                            <td>FTP / Telnet / SMB / NetBIOS / RDP</td>
+                            <td>High-impact service that should not be
+                                exposed on a typical home network.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="pill r-medio">MEDIO</span></td>
+                            <td>HTTP / HTTP-alt / DNS / SSDP / NFS</td>
+                            <td>Service exposed to the LAN. Often expected,
+                                but worth a banner check.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="pill r-bajo">BAJO</span></td>
+                            <td>Other open ports</td>
+                            <td>Open service that did not match the higher
+                                tiers. Worth a banner inspection.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="pill r-minimo">MÍNIMO</span></td>
+                            <td>No open ports</td>
+                            <td>Host is reachable but exposes no services.</td>
+                        </tr>
+                    </table>
+                </section>
+
+                <section id="api">
+                    <h2>API endpoints</h2>
+                    <p>All endpoints require an authenticated session and
+                       return JSON. Useful for piping into your own tooling.</p>
+                    <ul>
+                        <li><code>GET /api/reports</code> — every scan stored
+                            in the database.</li>
+                        <li><code>GET /api/scan/&lt;id&gt;/diff</code> — diff
+                            of one scan against the previous scan of the same
+                            network.</li>
+                    </ul>
+                </section>
+
+                <section id="security">
+                    <h2>Security &amp; ethics</h2>
+                    <ul>
+                        <li>Sentinel is an offensive-security tool. Only use it
+                            on networks you own or have explicit written
+                            authorisation to test.</li>
+                        <li>The dashboard is loopback-bound by default. Bind
+                            to LAN only behind a TLS proxy (nginx / caddy);
+                            credentials travel in plaintext otherwise.</li>
+                        <li>Auto-generated passwords are stored at
+                            <code>~/.sentinel/credentials</code> with mode
+                            <code>0600</code>. Override with the
+                            <code>SENTINEL_PASS</code> environment variable.</li>
+                        <li>Login is rate-limited (5 attempts per minute per
+                            IP) and protected by a per-session CSRF token.</li>
+                    </ul>
+                </section>
+            </div>
+        </div>
+    </main>
 </body>
 </html>
 """
@@ -490,6 +1100,17 @@ def _prepare_scans(page: int = 1, per_page: int = _DEFAULT_PAGE_SIZE) -> list[di
     for s in scans:
         s["scan_time"] = _fmt_time(s.get("scan_time", ""))
     return scans
+
+
+def _summarize(scans: list[dict]) -> dict:
+    """Counts shown in the summary tiles at the top of the dashboard."""
+    new_count = 0
+    crit_count = 0
+    for s in scans:
+        new_count += len(s.get("new_ips", []))
+        risks = s.get("risks", {}) or {}
+        crit_count += sum(1 for r in risks.values() if r == "CRÍTICO")
+    return {"new_count": new_count, "crit_count": crit_count}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -585,10 +1206,12 @@ def index():
     page       = min(page, total_pages)
 
     scans = _prepare_scans(page=page, per_page=per_page)
+    stats = _summarize(scans)
 
     return render_template_string(
         _DASHBOARD_TEMPLATE,
         scans       = scans,
+        stats       = stats,
         page        = page,
         per_page    = per_page,
         total       = total,
@@ -596,6 +1219,13 @@ def index():
         has_prev    = page > 1,
         has_next    = page < total_pages,
     )
+
+
+@app.route("/help")
+@login_required
+def help_page():
+    """In-app help / user guide."""
+    return render_template_string(_HELP_TEMPLATE)
 
 
 @app.route("/api/reports")
@@ -621,24 +1251,24 @@ def api_scan_diff(scan_id: int):
 
 def _print_startup_banner(host: str = "127.0.0.1", port: int = 5000) -> None:
     """Print server info, bind hint and credential warnings at startup."""
-    print("[*] Starting tactical server with authentication...")
+    print("[*] Starting Command Center with authentication...")
     bind_label = "LAN (0.0.0.0)" if host == "0.0.0.0" else "loopback (127.0.0.1)"
     print(f"[+] Bind: {bind_label} port {port}")
     if host == "0.0.0.0":
-        print("[!] Dashboard exposed to LAN. Use a TLS proxy (nginx/caddy)")
-        print("    for HTTPS — credentials travel in plaintext otherwise.")
+        print("[!] Dashboard exposed to the LAN. Front it with a TLS proxy")
+        print("    (nginx / caddy) — credentials travel in plaintext otherwise.")
     if _GENERATED_PASS:
-        print(f"[!] SENTINEL_PASS not configured — temporary password generated.")
+        print("[!] SENTINEL_PASS not configured — a temporary password was generated.")
         if _PASS_PERSISTED:
             print(f"[+] Credentials saved to {_CRED_FILE} (mode 0600).")
             print(f"    Read with:  cat {_CRED_FILE}")
         else:
             # Fallback only — could not write the file (read-only FS, etc.).
-            print(f"[!] Could not persist credentials. One-shot output below:")
+            print("[!] Could not persist credentials. One-shot output below:")
             print(f"    username={_USER}  password={_PASS}")
         print(f"[+] http://{host}:{port}  (username: {_USER})")
-        print(f"[!] Configure SENTINEL_PASS for production:")
-        print(f"      export SENTINEL_PASS=\"your_secure_password\"")
+        print("[!] Configure SENTINEL_PASS for production:")
+        print('      export SENTINEL_PASS="your_secure_password"')
     else:
         print(f"[+] http://{host}:{port}  (username: {_USER})")
 

@@ -41,9 +41,9 @@ _DEFAULT_RETENTION_DAYS = 90
 def _add_global(parser: argparse.ArgumentParser) -> None:
     """Verbosity flags shared at the top level."""
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Logging DEBUG en stdout.")
+                        help="DEBUG-level logging on stdout.")
     parser.add_argument("-q", "--quiet", action="store_true",
-                        help="Sólo errores en stdout (logs completos siguen yendo a logs/).")
+                        help="Errors only on stdout (full logs still written to logs/).")
 
 
 def _add_legacy_flags(parser: argparse.ArgumentParser) -> None:
@@ -71,46 +71,46 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_global(parser)
     _add_legacy_flags(parser)
 
-    sub = parser.add_subparsers(dest="cmd", metavar="<comando>")
+    sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
-    p_scan = sub.add_parser("scan",   help="Escaneo único de red")
+    p_scan = sub.add_parser("scan",   help="One-shot network scan")
     p_scan.add_argument("--auto-cut", action="store_true",
-                        help="Ejecuta corte ARP a hosts no fiables.")
+                        help="Run an ARP cut on hosts marked as untrusted.")
 
-    p_daemon = sub.add_parser("daemon", help="Modo daemon (escaneo continuo)")
+    p_daemon = sub.add_parser("daemon", help="Daemon mode (continuous scanning)")
     p_daemon.add_argument("--auto-cut", action="store_true",
-                          help="Ejecuta corte ARP a hosts no fiables.")
+                          help="Run an ARP cut on hosts marked as untrusted.")
 
-    sub.add_parser("hunt", help="Buscar exploits del último reporte")
+    sub.add_parser("hunt", help="Look up exploits for the latest report")
 
-    p_dash = sub.add_parser("dashboard", help="Levantar dashboard web (Flask)")
+    p_dash = sub.add_parser("dashboard", help="Start the web dashboard (Flask)")
     p_dash.add_argument("--expose", action="store_true",
-                        help="Bind 0.0.0.0 (LAN) en vez de 127.0.0.1.")
+                        help="Bind 0.0.0.0 (LAN) instead of 127.0.0.1.")
 
-    sub.add_parser("reports", help="Listar reportes guardados")
-    sub.add_parser("cve",     aliases=["cve-watch"], help="Monitorear CVEs")
+    sub.add_parser("reports", help="List saved reports")
+    sub.add_parser("cve",     aliases=["cve-watch"], help="Monitor CVEs")
 
-    p_spoof = sub.add_parser("spoof", help="ARP Spoof a una IP")
+    p_spoof = sub.add_parser("spoof", help="ARP-spoof a single IP")
     p_spoof.add_argument("victim",  metavar="VICTIM_IP")
     p_spoof.add_argument("gateway", metavar="GATEWAY_IP")
     p_spoof.add_argument("--iface", default=None,
-                         help=f"Interfaz (default: {get_default_iface()}).")
+                         help=f"Interface (default: {get_default_iface()}).")
 
-    p_deauth = sub.add_parser("deauth", help="Deauth 802.11")
+    p_deauth = sub.add_parser("deauth", help="802.11 deauthentication")
     p_deauth.add_argument("target",  metavar="TARGET_MAC",
-                          help="MAC víctima o 'broadcast'.")
+                          help="Victim MAC or 'broadcast'.")
     p_deauth.add_argument("bssid",   metavar="BSSID")
-    p_deauth.add_argument("--iface", required=True, help="Interfaz en monitor mode.")
+    p_deauth.add_argument("--iface", required=True, help="Monitor-mode interface.")
     p_deauth.add_argument("--channel", type=int, default=None,
-                          help="Canal 802.11 fijo (default: hopping 1/6/11).")
+                          help="Lock to a fixed 802.11 channel (default: hop 1/6/11).")
     p_deauth.add_argument("--count",   type=int, default=0,
-                          help="Frames a enviar (0 = infinito).")
+                          help="Frames to send (0 = unlimited).")
 
-    p_db = sub.add_parser("db", help="Mantenimiento de base de datos")
-    sub_db = p_db.add_subparsers(dest="db_cmd", metavar="<acción>")
-    p_purge = sub_db.add_parser("purge", help="Borrar scans antiguos.")
+    p_db = sub.add_parser("db", help="Database maintenance")
+    sub_db = p_db.add_subparsers(dest="db_cmd", metavar="<action>")
+    p_purge = sub_db.add_parser("purge", help="Delete old scans.")
     p_purge.add_argument("--days", type=int, default=_DEFAULT_RETENTION_DAYS,
-                         help=f"Retención en días (default {_DEFAULT_RETENTION_DAYS}).")
+                         help=f"Retention in days (default {_DEFAULT_RETENTION_DAYS}).")
 
     return parser
 
@@ -160,7 +160,7 @@ def _run_cve() -> None:
 
 def _run_spoof(victim: str, gateway: str, iface: str | None) -> bool:
     if not check_root():
-        rprint("[red][✗] Necesitas root.[/red]")
+        rprint("[red][x] Root privileges required.[/red]")
         return True
     from droidnet.modules.spoofer import poison
     poison(victim, gateway, iface or get_default_iface())
@@ -170,7 +170,7 @@ def _run_spoof(victim: str, gateway: str, iface: str | None) -> bool:
 def _run_deauth(target: str, bssid: str, iface: str,
                 channel: int | None, count: int) -> bool:
     if not check_root():
-        rprint("[red][✗] Necesitas root.[/red]")
+        rprint("[red][x] Root privileges required.[/red]")
         return True
     from droidnet.modules.deauther import deauth_target, BROADCAST
     mac = BROADCAST if target.lower() == "broadcast" else target
@@ -181,11 +181,11 @@ def _run_deauth(target: str, bssid: str, iface: str,
 def _run_db_purge(days: int) -> None:
     from droidnet.core.database import purge_old_scans
     deleted = purge_old_scans(days)
-    rprint(f"[green][✓][/green] Purgados {deleted} scans con antigüedad > {days} días.")
+    rprint(f"[green][+][/green] Purged {deleted} scans older than {days} days.")
 
 
 def _legacy_warn(flag: str, replacement: str) -> None:
-    rprint(f"[yellow][!][/yellow] {flag} está obsoleto; usa: [cyan]{replacement}[/cyan]")
+    rprint(f"[yellow][!][/yellow] {flag} is deprecated; use: [cyan]{replacement}[/cyan]")
 
 
 def handle_args(args: argparse.Namespace) -> bool:
@@ -223,7 +223,7 @@ def handle_args(args: argparse.Namespace) -> bool:
         if getattr(args, "db_cmd", None) == "purge":
             _run_db_purge(args.days)
         else:
-            rprint("[yellow]Uso: droidnet db purge [--days N][/yellow]")
+            rprint("[yellow]Usage: droidnet db purge [--days N][/yellow]")
         return True
 
     # ── Legacy flag path (back-compat) ───────────────────────────
@@ -255,7 +255,7 @@ def handle_args(args: argparse.Namespace) -> bool:
         _legacy_warn("--spoof",
                      "droidnet spoof <VICTIM> <GATEWAY> [--iface IFACE]")
         if len(args.spoof) < 2:
-            rprint("[red][✗] --spoof requiere al menos <IP_VICTIMA> <IP_GATEWAY>.[/red]")
+            rprint("[red][x] --spoof needs at least <VICTIM_IP> <GATEWAY_IP>.[/red]")
             return True
         iface = args.spoof[2] if len(args.spoof) > 2 else None
         return _run_spoof(args.spoof[0], args.spoof[1], iface)

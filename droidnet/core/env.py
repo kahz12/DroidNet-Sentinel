@@ -54,43 +54,43 @@ def display_capabilities(env_state: dict) -> None:
     Args:
         env_state: dict returned by evaluate_system().
     """
-    console.print("\n[bold cyan][*] Evaluando Entorno Operativo...[/bold cyan]")
-    console.print(f"  [+] Plataforma  : [bold green]{env_state['platform_name']}[/bold green]")
-    console.print(f"  [+] Interfaz    : [cyan]{env_state['default_iface']}[/cyan]")
+    console.print("\n[bold cyan][*] Probing operating environment...[/bold cyan]")
+    console.print(f"  [+] Platform   : [bold green]{env_state['platform_name']}[/bold green]")
+    console.print(f"  [+] Interface  : [cyan]{env_state['default_iface']}[/cyan]")
 
     if env_state["is_root"]:
-        console.print("  [+] Acceso      : [bold red]ROOT[/bold red]")
+        console.print("  [+] Privilege  : [bold red]ROOT[/bold red]")
     else:
-        console.print("  [+] Acceso      : [bold yellow]Usuario Estándar (Limitado)[/bold yellow]")
+        console.print("  [+] Privilege  : [bold yellow]Standard user (limited)[/bold yellow]")
 
-    console.print("\n[bold white]  Módulos:[/bold white]")
+    console.print("\n[bold white]  Modules:[/bold white]")
 
     modules = [
-        ("Sentinel (Escaneo de Red)",  True,
-         "Siempre disponible"),
-        ("Hunter (Búsqueda Exploits)", env_state["tools"].get("searchsploit", False),
-         "Requiere searchsploit"),
-        ("Dashboard (Command Center)", True,
-         "Siempre disponible"),
+        ("Sentinel (Network scan)",      True,
+         "Always available"),
+        ("Hunter (Exploit lookup)",      env_state["tools"].get("searchsploit", False),
+         "Requires searchsploit"),
+        ("Dashboard (Command Center)",   True,
+         "Always available"),
         ("Spoofer (ARP MitM)",
          env_state["raw_sockets_enabled"] and env_state["tools"].get("arpspoof", False),
-         "Requiere root + arpspoof"),
-        ("Deauther (802.11 DoS)",      env_state["monitor_mode_capable"],
-         "Requiere root + iw + monitor mode"),
+         "Requires root + arpspoof"),
+        ("Deauther (802.11 DoS)",        env_state["monitor_mode_capable"],
+         "Requires root + iw + monitor mode"),
     ]
 
     for name, available, note in modules:
         if available:
-            console.print(f"    [green]✓[/green] {name}")
+            console.print(f"    [green]+[/green] {name}")
         else:
-            console.print(f"    [red]✗[/red] {name} [dim]({note})[/dim]")
+            console.print(f"    [red]x[/red] {name} [dim]({note})[/dim]")
 
-    console.print("\n[bold white]  Herramientas:[/bold white]")
+    console.print("\n[bold white]  Tools:[/bold white]")
     for tool, available in env_state["tools"].items():
         if available:
-            console.print(f"    [green]✓[/green] {tool}")
+            console.print(f"    [green]+[/green] {tool}")
         else:
-            console.print(f"    [red]✗[/red] [dim]{tool}[/dim]")
+            console.print(f"    [red]x[/red] [dim]{tool}[/dim]")
 
 
 if __name__ == "__main__":
