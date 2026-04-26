@@ -28,10 +28,12 @@ Data source:
 import hmac
 import os
 import secrets
+import stat
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 from threading import Lock
 
 from flask import (
@@ -63,13 +65,72 @@ app.config.update(
 
 _USER = os.environ.get("SENTINEL_USER", "admin")
 
+# Auto-generated credentials are persisted at ~/.sentinel/credentials with
+# 0600 perms instead of being printed to stdout, where redirected logs or a
+# shared tmux pane could leak them. The env var still wins when set.
+_CRED_DIR  = Path.home() / ".sentinel"
+_CRED_FILE = _CRED_DIR / "credentials"
+
+
+def _read_persisted_password() -> str | None:
+    """
+    Return the password stored in ~/.sentinel/credentials (one line, plain
+    text). Refuses world/group-readable files. Returns None on miss/error.
+    """
+    try:
+        st = _CRED_FILE.stat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        log.warning("ignoring %s: not 0600 (mode=%o)", _CRED_FILE, st.st_mode & 0o777)
+        return None
+    try:
+        text = _CRED_FILE.read_text().strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def _persist_password(password: str) -> bool:
+    """
+    Atomically write *password* to ~/.sentinel/credentials with 0600 perms.
+    Returns True on success.
+    """
+    try:
+        _CRED_DIR.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(_CRED_DIR, 0o700)
+        # Open with O_CREAT|O_WRONLY|O_TRUNC and explicit mode so we never
+        # widen perms via umask races.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(_CRED_FILE, flags, 0o600)
+        try:
+            os.write(fd, password.encode())
+        finally:
+            os.close(fd)
+        os.chmod(_CRED_FILE, 0o600)
+        return True
+    except OSError as exc:
+        log.warning("could not persist credentials to %s: %s", _CRED_FILE, exc)
+        return False
+
+
 _PASS_FROM_ENV = os.environ.get("SENTINEL_PASS")
 if _PASS_FROM_ENV:
     _PASS = _PASS_FROM_ENV
     _GENERATED_PASS = False
+    _PASS_PERSISTED = False
 else:
-    _PASS = secrets.token_urlsafe(16)
-    _GENERATED_PASS = True
+    _persisted = _read_persisted_password()
+    if _persisted:
+        _PASS = _persisted
+        _GENERATED_PASS = False
+        _PASS_PERSISTED = True
+    else:
+        _PASS = secrets.token_urlsafe(16)
+        _GENERATED_PASS = True
+        _PASS_PERSISTED = _persist_password(_PASS)
 
 # Initialise DB schema (idempotent — safe to call on every restart).
 init_db()
@@ -568,7 +629,14 @@ def _print_startup_banner(host: str = "127.0.0.1", port: int = 5000) -> None:
         print("    for HTTPS — credentials travel in plaintext otherwise.")
     if _GENERATED_PASS:
         print(f"[!] SENTINEL_PASS not configured — temporary password generated.")
-        print(f"[+] Credentials: username={_USER}  password={_PASS}")
+        if _PASS_PERSISTED:
+            print(f"[+] Credentials saved to {_CRED_FILE} (mode 0600).")
+            print(f"    Read with:  cat {_CRED_FILE}")
+        else:
+            # Fallback only — could not write the file (read-only FS, etc.).
+            print(f"[!] Could not persist credentials. One-shot output below:")
+            print(f"    username={_USER}  password={_PASS}")
+        print(f"[+] http://{host}:{port}  (username: {_USER})")
         print(f"[!] Configure SENTINEL_PASS for production:")
         print(f"      export SENTINEL_PASS=\"your_secure_password\"")
     else:

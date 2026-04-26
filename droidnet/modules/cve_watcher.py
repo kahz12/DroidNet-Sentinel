@@ -38,7 +38,7 @@ from droidnet.core.database import (
     get_cve_alerts,
 )
 from droidnet.core.logger import get_logger
-from droidnet.core.notifier import send_alert
+from droidnet.core.notifier import send_alert, escape_markdown
 
 log = get_logger(__name__)
 
@@ -520,17 +520,19 @@ def _build_telegram_report(matches: list[dict], network: str) -> str:
     """Build a Markdown-formatted Telegram message for CVE alerts."""
     lines = [
         "\U0001f6a8 *CVE-Watcher Alert*\n",
-        f"\U0001f4e1 *Network:* `{network}`",
+        f"\U0001f4e1 *Network:* `{escape_markdown(network)}`",
         f"\u26a0\ufe0f *Vulnerabilities:* {len(matches)}\n",
     ]
 
     for m in matches[:5]:
         emoji = _SEVERITY_EMOJI.get(m["severity"], "\u26aa")
         score_str = f"{m['score']:.1f}" if m["score"] else "?"
+        service_md = escape_markdown(m["service"])
+        impact_md  = escape_markdown(m["impact"][:100])
         lines.append(
             f"{emoji} `{m['cve_id']}` — *{m['severity']}* ({score_str})\n"
-            f"   {m['service']} \u2192 {', '.join(m['ips'][:3])}\n"
-            f"   _{m['impact'][:100]}_\n"
+            f"   {service_md} \u2192 {', '.join(m['ips'][:3])}\n"
+            f"   _{impact_md}_\n"
         )
 
     if len(matches) > 5:

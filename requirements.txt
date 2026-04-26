@@ -8,7 +8,7 @@ rich>=13.7,<14
 flask>=3.0,<4
 
 # Optional: only if using deauther.py on Linux/PC
-# scapy>=2.5,<3
+scapy>=2.5,<3
 
 # Optional: the dashboard already includes its own in-memory rate-limiting and CSRF
 # protection. If you deploy behind a reverse proxy or with multiple workers, 

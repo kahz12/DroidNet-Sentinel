@@ -29,7 +29,7 @@ from droidnet.config       import (
 from droidnet.core.database  import init_db, save_scan, purge_old_scans
 from droidnet.core.logger    import get_logger
 from droidnet.core.risk      import classify_risk
-from droidnet.core.notifier  import send_alert
+from droidnet.core.notifier  import send_alert, escape_markdown
 from droidnet.platform.utils import get_default_iface, get_wifi_info
 
 log = get_logger(__name__)
@@ -396,12 +396,13 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                     log.warning("scan empty network=%s (sin hosts detectados)",
                                 current_ssid)
 
+                ssid_md = escape_markdown(current_ssid)
                 send_alert(
                     title       = "Sentinel Alert",
                     local_msg   = f"{len(live_ips)} hosts analizados en {current_ssid}",
                     telegram_msg= (
                         f"🛡️ *DroidNet Sentinel Report*\n\n"
-                        f"📡 *Red:* `{current_ssid}`\n"
+                        f"📡 *Red:* `{ssid_md}`\n"
                         f"🎯 *Objetivos vivos:* {len(live_ips)}\n"
                         f"⚠️ *Revisa el Command Center para detalles.*"
                     ),

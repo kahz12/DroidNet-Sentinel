@@ -36,26 +36,76 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "TOKEN_DE_BOTFATHER")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ID_NUMERICO")
 
 
+_CONFIG_SCHEMA: dict = {
+    # key                 (type,  element_type or None for non-list, default)
+    "excluded_ips":       (list,  str,  []),
+    "trusted_ips":        (list,  str,  []),
+    "db_retention_days":  (int,   None, 90),
+}
+
+
+def _validate_config(raw: dict) -> dict:
+    """
+    Coerce *raw* (parsed JSON) to the declared _CONFIG_SCHEMA.
+
+    Drops bad keys/elements, fills missing keys with defaults, prints one
+    warning per problem so the user can fix config.json.
+    Returns a new dict — never raises.
+    """
+    if not isinstance(raw, dict):
+        print(f"[!] config.json: top-level no es objeto JSON ({type(raw).__name__}); usando defaults.")
+        return {key: default for key, (_, _, default) in _CONFIG_SCHEMA.items()}
+
+    out: dict = {}
+    for key, (expected_type, elem_type, default) in _CONFIG_SCHEMA.items():
+        if key not in raw:
+            out[key] = default
+            continue
+        value = raw[key]
+        if not isinstance(value, expected_type) or isinstance(value, bool):
+            # bool is a subclass of int, reject it explicitly for int fields.
+            print(f"[!] config.json['{key}']: tipo inválido "
+                  f"({type(value).__name__}, se esperaba {expected_type.__name__}); usando default.")
+            out[key] = default
+            continue
+        if elem_type is not None:  # list with element type
+            cleaned = [v for v in value if isinstance(v, elem_type)]
+            if len(cleaned) != len(value):
+                bad = len(value) - len(cleaned)
+                print(f"[!] config.json['{key}']: descartando {bad} entrada(s) no-{elem_type.__name__}.")
+            out[key] = cleaned
+        else:
+            out[key] = value
+
+    extra = set(raw) - set(_CONFIG_SCHEMA)
+    if extra:
+        print(f"[!] config.json: claves no reconocidas {sorted(extra)} (ignoradas).")
+    return out
+
+
 def load_user_config() -> dict:
     """
-    Load config.json from the project root.
+    Load and validate config.json from the project root.
 
     Expected format:
         {
-            "excluded_ips": ["192.168.1.100"],
-            "trusted_ips":  ["192.168.1.1", "192.168.1.50"]
+            "excluded_ips":      ["192.168.1.100"],
+            "trusted_ips":       ["192.168.1.1", "192.168.1.50"],
+            "db_retention_days": 90
         }
 
     Returns:
-        dict: Parsed config, or safe defaults if the file does not exist.
+        dict: Validated config (always with all schema keys), or defaults
+        if the file is missing/corrupt.
     """
-    defaults: dict = {"excluded_ips": [], "trusted_ips": []}
+    defaults = {key: default for key, (_, _, default) in _CONFIG_SCHEMA.items()}
     if not CONFIG_FILE.exists():
         return defaults
     try:
         with CONFIG_FILE.open() as fh:
-            return json.load(fh)
+            raw = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
         # A corrupt config.json should not break all scans.
         print(f"[!] config.json inválido ({exc}); usando defaults.")
         return defaults
+    return _validate_config(raw)

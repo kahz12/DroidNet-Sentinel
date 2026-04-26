@@ -9,11 +9,33 @@ reads from environment variables). If the token is still the
 placeholder value the Telegram call is silently skipped.
 """
 
+import re
+
 import requests
 from rich import print as rprint
 
 from droidnet.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 from droidnet.platform.utils import send_notification as _send_local
+
+
+# Telegram "Markdown" (legacy) parse_mode treats these as formatting:
+#   _italic_   *bold*   `code`   [link](url)
+# An attacker-controlled SSID like "My_Cafe*" would either break the
+# message ("entity at byte X") or inject formatting. Apply this escape
+# at the boundary to any value that originates from user/network input.
+_TG_MD_SPECIAL = re.compile(r"([_*`\[\]])")
+
+
+def escape_markdown(text: str) -> str:
+    """
+    Escape Telegram Markdown (legacy) metacharacters in *text*.
+
+    Use on user/network-controlled values (SSIDs, banners, network names)
+    before interpolating them into a Markdown-mode Telegram message.
+    """
+    if not text:
+        return ""
+    return _TG_MD_SPECIAL.sub(r"\\\1", text)
 
 
 def send_local(title: str, message: str) -> None:
