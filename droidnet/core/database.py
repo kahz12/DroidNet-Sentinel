@@ -21,8 +21,8 @@ from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
 
-# Port risk sets — single source of truth. sentinel.evaluate_risk reusa
-# classify_risk() y solo añade markup de Rich encima.
+# Port risk sets — single source of truth. sentinel.evaluate_risk reuses
+# classify_risk() and only adds Rich markup on top.
 _CRITICAL = {"21/tcp", "23/tcp", "445/tcp", "139/tcp", "3389/tcp"}
 _MEDIUM   = {"80/tcp", "8080/tcp", "53/tcp", "1900/tcp", "2049/tcp"}
 
@@ -92,7 +92,7 @@ def init_db() -> None:
                 UNIQUE(cve_id, ip, service)
             );
 
-            -- Índices para consultas frecuentes del dashboard.
+            -- Indexes for frequent dashboard queries.
             CREATE INDEX IF NOT EXISTS idx_scans_network_id
                 ON scans(network, id DESC);
             CREATE INDEX IF NOT EXISTS idx_hosts_scan_ip
@@ -224,7 +224,7 @@ def get_all_scans() -> list[dict]:
 
 
 def count_scans() -> int:
-    """Total number of scans stored. Útil para paginación en el dashboard."""
+    """Total number of scans stored. Useful for pagination in the dashboard."""
     with _conn() as c:
         row = c.execute("SELECT COUNT(*) AS n FROM scans").fetchone()
     return int(row["n"]) if row else 0
@@ -239,8 +239,8 @@ def get_all_scans_with_diffs(
     scan on the same network.
 
     Args:
-        limit  : máximo de scans a devolver. None = sin límite (legacy).
-        offset : nº de scans a saltar (paginación).
+        limit  : maximum number of scans to return. None = no limit (legacy).
+        offset : number of scans to skip (pagination).
 
     Extra keys per scan:
         new_ips      : IPs not present in the previous scan

@@ -2,7 +2,7 @@
 Exploit Lookup Module — cross-references scan results with Exploit-DB.
 
 Takes the most recent Sentinel JSON report and searches each detected
-service against the local Exploit-DB via searchsploit. Si searchsploit
+service against the local Exploit-DB via searchsploit. If searchsploit
 no está disponible, hace fallback a la API pública de Vulners.
 
 Requires:
@@ -130,11 +130,11 @@ def _hunt_exploits_online(query: str) -> list[dict]:
 
 def hunt_exploits(query: str) -> list[dict]:
     """
-    Run an exploit search for *query* y devuelve resultados ordenados
-    por fecha de publicación descendente (más recientes primero).
+    Run an exploit search for *query* and return results ordered
+    by descending publication date (most recent first).
 
-    Usa searchsploit local si está disponible, si no cae al fallback
-    online (Vulners). Memoiza por query para evitar consultas duplicadas.
+    Uses local searchsploit if available, otherwise falls back to
+    online search (Vulners). Memoises by query to avoid duplicate requests.
     """
     if query in _EXPLOIT_CACHE:
         return _EXPLOIT_CACHE[query]
@@ -212,4 +212,6 @@ def run_hunter() -> None:
 
 
 if __name__ == "__main__":
+    run_hunter()
+:
     run_hunter()

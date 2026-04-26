@@ -5,7 +5,7 @@ __pycache__/
 *.pyd
 *.so
 
-# Distribución / empaquetado
+# Distribution / packaging
 dist/
 build/
 *.egg-info/
@@ -13,28 +13,28 @@ build/
 .eggs/
 MANIFEST
 
-# Entornos virtuales
+# Virtual environments
 venv/
 .venv/
 env/
 .env/
 
-# ── Tests y cobertura ─────────────────────────────────────────────
+# ── Tests and coverage ─────────────────────────────────────────────
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# ── Reportes generados (datos de red) ─────────────────────────────
+# ── Generated reports (network data) ─────────────────────────────
 reports/
 
-# ── Cache local NVD (CVE-Watcher) ─────────────────────────────────
+# ── Local NVD cache (CVE-Watcher) ─────────────────────────────────
 nvd_cache/
 
-# ── Informes de auditoría internos ────────────────────────────────
+# ── Internal audit reports ────────────────────────────────
 INFORME_AUDITORIA.txt
 
-# ── Credenciales y configuración sensible ─────────────────────────
+# ── Credentials and sensitive configuration ─────────────────────────
 .env
 *.env
 config.json
@@ -44,7 +44,7 @@ secrets.*
 *.log
 logs/
 
-# ── Bases de datos ────────────────────────────────────────────────
+# ── Databases ────────────────────────────────────────────────
 *.db
 *.sqlite
 *.sqlite3

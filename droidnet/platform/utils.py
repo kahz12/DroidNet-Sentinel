@@ -149,7 +149,7 @@ def _get_wifi_info_termux() -> dict | None:
         data = _json.loads(proc.stdout)
         if data.get("supplicant_state") == "COMPLETED":
             return {
-                "ssid":     data.get("ssid", "Desconocida"),
+                "ssid":     data.get("ssid", "Unknown"),
                 "ip":       data.get("ip"),
                 "bssid":    data.get("bssid", "Unknown"),
                 "platform": "termux",
@@ -169,9 +169,9 @@ def _get_wifi_info_nmcli() -> dict | None:
             return None
 
         for line in proc.stdout.strip().split("\n"):
-            if line.lower().startswith(("yes:", "sí:")):
+            if line.lower().startswith(("yes:", "sí:", "si:")):
                 parts = line.split(":")
-                ssid      = parts[1] if len(parts) > 1 else "Desconocida"
+                ssid      = parts[1] if len(parts) > 1 else "Unknown"
                 bssid_raw = ":".join(parts[2:]) if len(parts) > 2 else "Unknown"
                 bssid     = bssid_raw.replace("\\", "")
                 ip_addr   = _get_local_ip()
@@ -227,7 +227,7 @@ def get_wifi_info() -> dict | None:
 
     ip_addr = _get_local_ip()
     if ip_addr and ip_addr != "127.0.0.1":
-        return {"ssid": "Red Cableada", "ip": ip_addr, "bssid": "N/A", "platform": "linux"}
+        return {"ssid": "Wired Network", "ip": ip_addr, "bssid": "N/A", "platform": "linux"}
 
     return None
 
@@ -277,25 +277,25 @@ if __name__ == "__main__":
 
     console = Console()
     console.print("\n[bold cyan]═══ DroidNet Platform Diagnostics ═══[/bold cyan]\n")
-    console.print(f"  Plataforma : [bold]{get_platform_name()}[/bold]")
-    console.print(f"  Root       : {'[green]Sí[/green]' if check_root() else '[yellow]No[/yellow]'}")
-    console.print(f"  Interfaz   : [cyan]{get_default_iface()}[/cyan]")
+    console.print(f"  Platform   : [bold]{get_platform_name()}[/bold]")
+    console.print(f"  Root       : {'[green]Yes[/green]' if check_root() else '[yellow]No[/yellow]'}")
+    console.print(f"  Interface  : [cyan]{get_default_iface()}[/cyan]")
 
     wifi = get_wifi_info()
     if wifi:
         console.print(f"  WiFi SSID  : [bold white]{wifi['ssid']}[/bold white]")
-        console.print(f"  IP Local   : [cyan]{wifi['ip']}[/cyan]")
+        console.print(f"  Local IP   : [cyan]{wifi['ip']}[/cyan]")
         console.print(f"  BSSID      : [dim]{wifi['bssid']}[/dim]")
     else:
-        console.print("  WiFi       : [red]No detectada[/red]")
+        console.print("  WiFi       : [red]Not detected[/red]")
 
-    console.print("\n[bold white]Herramientas:[/bold white]")
+    console.print("\n[bold white]Tools:[/bold white]")
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="white", width=30)
     table.add_column(width=20)
 
     for tool, available in get_available_tools().items():
-        status = "[green]✓ Disponible[/green]" if available else "[red]✗ No encontrado[/red]"
+        status = "[green]✓ Available[/green]" if available else "[red]✗ Not found[/red]"
         table.add_row(f"  {tool}", status)
 
     console.print(table)

@@ -324,9 +324,9 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
 
     Args:
         interactive : True for one-shot scan, False for daemon mode.
-        auto_cut    : Si True, ejecuta cut_unknowns automáticamente sobre
-                      hosts no listados en trusted_ips. Por defecto False
-                      (opt-in) — el corte ARP es destructivo.
+        auto_cut    : If True, executes cut_unknowns automatically on
+                      hosts not listed in trusted_ips. Default is False
+                      (opt-in) — ARP cutting is destructive.
     """
     last_ssid      = None
     last_scan_time = datetime.min

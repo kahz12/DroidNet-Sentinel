@@ -95,7 +95,7 @@ def print_menu() -> None:
 # ══════════════════════════════════════════════════════════════════
 
 def _ask_auto_cut() -> bool:
-    """Pregunta si activar corte ARP automático. Por defecto NO (destructivo)."""
+    """Ask whether to activate automatic ARP cutting. Default is NO (destructive)."""
     answer = Prompt.ask(
         "[bold]¿Corte ARP automático a hosts no fiables?[/bold]",
         choices=["s", "n"],
@@ -136,8 +136,8 @@ def _run_hunter() -> None:
 
 def _run_dashboard() -> None:
     from droidnet.web.dashboard import app, _print_startup_banner
-    # Desde el menú interactivo el bind es siempre loopback. Para
-    # exponer a LAN, usar la CLI: `python main.py --dashboard --expose`.
+    # From the interactive menu, the bind is always loopback. To
+    # expose to LAN, use the CLI: `python main.py --dashboard --expose`.
     _print_startup_banner(host="127.0.0.1")
     rprint("[dim]Ctrl+C para detener.[/dim]\n")
     try:

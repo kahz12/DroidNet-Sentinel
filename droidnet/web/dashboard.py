@@ -51,7 +51,7 @@ from droidnet.core.database import (
 app = Flask(__name__)
 app.secret_key = os.environ.get("SENTINEL_SECRET") or secrets.token_hex(32)
 
-# Hardening de cookies de sesión + timeout 8h.
+# Session cookie hardening + 8h timeout.
 app.config.update(
     SESSION_COOKIE_HTTPONLY      = True,
     SESSION_COOKIE_SAMESITE      = "Lax",
@@ -73,12 +73,12 @@ init_db()
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Rate limiter para /login (5 intentos / min / IP)
+#  Rate limiter for /login (5 attempts / min / IP)
 # ══════════════════════════════════════════════════════════════════
 #
-# Si flask-limiter está disponible se usa; si no, fallback in-memory
-# basado en sliding window con deque por IP. Suficiente para un proceso
-# único (que es el modo único soportado por el dashboard hoy).
+# If flask-limiter is available it is used; otherwise, in-memory
+# fallback based on a sliding window with a deque per IP. Sufficient
+# for a single process (the only mode supported by the dashboard today).
 
 _LOGIN_WINDOW_SEC = 60.0
 _LOGIN_MAX_TRIES  = 5
@@ -87,14 +87,14 @@ _login_lock = Lock()
 
 
 def _client_ip() -> str:
-    """IP cliente para rate-limit. No confía en X-Forwarded-For por defecto."""
+    """Client IP for rate-limiting. Does not trust X-Forwarded-For by default."""
     return request.remote_addr or "unknown"
 
 
 def _login_rate_limited(ip: str) -> bool:
     """
-    Devuelve True si *ip* ha agotado su cupo de intentos en la ventana.
-    Registra el intento actual cuando aún hay cupo.
+    Returns True if *ip* has exhausted its attempt quota in the window.
+    Registers the current attempt when there is still quota.
     """
     now = time.monotonic()
     with _login_lock:
@@ -108,11 +108,11 @@ def _login_rate_limited(ip: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  CSRF token (per-session, sin dependencia externa)
+#  CSRF token (per-session, without external dependency)
 # ══════════════════════════════════════════════════════════════════
 
 def _get_csrf_token() -> str:
-    """Devuelve el token CSRF de la sesión, generándolo si falta."""
+    """Returns the session's CSRF token, generating it if missing."""
     token = session.get("_csrf_token")
     if not token:
         token = secrets.token_urlsafe(32)
@@ -121,7 +121,7 @@ def _get_csrf_token() -> str:
 
 
 def _csrf_ok(form_token: str) -> bool:
-    """Comparación constante del token enviado vs el de sesión."""
+    """Constant-time comparison of the submitted token vs the session token."""
     expected = session.get("_csrf_token", "")
     if not expected or not form_token:
         return False
@@ -155,7 +155,7 @@ def login_required(f):
 
 _LOGIN_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -211,16 +211,16 @@ _LOGIN_TEMPLATE = """
 <body>
     <div class="card">
         <h1>🛡️ DroidNet Sentinel</h1>
-        <p class="subtitle">Command Center — Acceso restringido</p>
+        <p class="subtitle">Command Center — Restricted Access</p>
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
         <form method="POST" action="{{ url_for('login') }}">
             <input type="hidden" name="next"   value="{{ next_url }}">
             <input type="hidden" name="_csrf"  value="{{ csrf_token }}">
-            <label for="u">Usuario</label>
+            <label for="u">Username</label>
             <input type="text"     id="u" name="username" autocomplete="username" autofocus>
-            <label for="p">Contraseña</label>
+            <label for="p">Password</label>
             <input type="password" id="p" name="password" autocomplete="current-password">
-            <button type="submit">Iniciar sesión</button>
+            <button type="submit">Log in</button>
         </form>
     </div>
 </body>
@@ -229,7 +229,7 @@ _LOGIN_TEMPLATE = """
 
 _DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -319,22 +319,22 @@ _DASHBOARD_TEMPLATE = """
 <body>
     <header>
         <h1>🛡️ Sentinel Command Center</h1>
-        <a href="{{ url_for('logout') }}" class="logout">Cerrar sesión</a>
+        <a href="{{ url_for('logout') }}" class="logout">Log out</a>
     </header>
-    <p class="subtitle">Histórico de auditorías de red. <i>Powered by DroidNet.</i></p>
+    <p class="subtitle">Network audit history. <i>Powered by DroidNet.</i></p>
 
     <div class="grid">
     {% for scan in scans %}
         <div class="card">
-            <div class="card-title">Red: {{ scan.network }}</div>
+            <div class="card-title">Network: {{ scan.network }}</div>
             <div class="meta">
-                Escaneo: {{ scan.scan_time }}<br>
-                Dispositivos: {{ scan.total_devices }}
+                Scan: {{ scan.scan_time }}<br>
+                Devices: {{ scan.total_devices }}
                 {% if scan.new_ips %}
-                  &middot; <span style="color:#d29922">{{ scan.new_ips|length }} nuevo(s)</span>
+                  &middot; <span style="color:#d29922">{{ scan.new_ips|length }} new</span>
                 {% endif %}
                 {% if scan.gone_ips %}
-                  &middot; <span style="color:#f85149">{{ scan.gone_ips|length }} desaparecido(s)</span>
+                  &middot; <span style="color:#f85149">{{ scan.gone_ips|length }} disappeared</span>
                 {% endif %}
             </div>
 
@@ -344,7 +344,7 @@ _DASHBOARD_TEMPLATE = """
                 {% set is_vuln = risk in ('CRÍTICO', 'MEDIO', 'BAJO') %}
                 <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% endif %}">
                     <span class="ip">{{ ip }}</span>
-                    {% if is_new %}<span class="badge badge-new">NUEVO</span>{% endif %}
+                    {% if is_new %}<span class="badge badge-new">NEW</span>{% endif %}
                     <span class="risk
                         {% if risk == 'CRÍTICO' %}r-critico
                         {% elif risk == 'MEDIO'  %}r-medio
@@ -363,7 +363,7 @@ _DASHBOARD_TEMPLATE = """
 
                     {% if ip in scan.port_changes %}
                     <div class="diff-box">
-                        <div class="diff-label">Cambios de puertos:</div>
+                        <div class="diff-label">Port changes:</div>
                         {% for p in scan.port_changes[ip].added %}
                             <span class="added">+ {{ p }}</span><br>
                         {% endfor %}
@@ -376,26 +376,26 @@ _DASHBOARD_TEMPLATE = """
             {% endfor %}
 
             {% if scan.gone_ips %}
-            <div class="gone-list">Desaparecidos: {{ scan.gone_ips | join(', ') }}</div>
+            <div class="gone-list">Disappeared: {{ scan.gone_ips | join(', ') }}</div>
             {% endif %}
         </div>
     {% else %}
-        <p>No hay escaneos en la base de datos. Ejecuta un escaneo primero.</p>
+        <p>No scans in the database. Run a scan first.</p>
     {% endfor %}
     </div>
 
     {% if total_pages > 1 %}
     <nav class="pager">
         {% if has_prev %}
-            <a href="{{ url_for('index', page=page-1, per_page=per_page) }}">← Anterior</a>
+            <a href="{{ url_for('index', page=page-1, per_page=per_page) }}">← Previous</a>
         {% else %}
-            <span class="disabled">← Anterior</span>
+            <span class="disabled">← Previous</span>
         {% endif %}
-        <span>Página {{ page }} / {{ total_pages }} &middot; {{ total }} scans</span>
+        <span>Page {{ page }} / {{ total_pages }} &middot; {{ total }} scans</span>
         {% if has_next %}
-            <a href="{{ url_for('index', page=page+1, per_page=per_page) }}">Siguiente →</a>
+            <a href="{{ url_for('index', page=page+1, per_page=per_page) }}">Next →</a>
         {% else %}
-            <span class="disabled">Siguiente →</span>
+            <span class="disabled">Next →</span>
         {% endif %}
     </nav>
     {% endif %}
@@ -420,7 +420,7 @@ _MAX_PAGE_SIZE     = 100
 
 
 def _prepare_scans(page: int = 1, per_page: int = _DEFAULT_PAGE_SIZE) -> list[dict]:
-    """Load *page* of scans with diffs y formatea timestamps."""
+    """Load *page* of scans with diffs and format timestamps."""
     offset = max(0, (page - 1) * per_page)
     scans = get_all_scans_with_diffs(limit=per_page, offset=offset)
     for s in scans:
@@ -441,11 +441,11 @@ def login():
     next_url = request.args.get("next") or request.form.get("next") or "/"
 
     if request.method == "POST":
-        # Rate-limit: cuenta cada POST a /login por IP en ventana de 60s.
+        # Rate-limit: count every POST to /login by IP in a 60s window.
         if _login_rate_limited(_client_ip()):
             error = (
-                f"Demasiados intentos. Espera {int(_LOGIN_WINDOW_SEC)}s "
-                f"antes de reintentar."
+                f"Too many attempts. Wait {int(_LOGIN_WINDOW_SEC)}s "
+                f"before retrying."
             )
             return render_template_string(
                 _LOGIN_TEMPLATE,
@@ -454,9 +454,9 @@ def login():
                 csrf_token=_get_csrf_token(),
             ), 429
 
-        # CSRF: el token debe coincidir con el de la sesión que sirvió el GET.
+        # CSRF: the token must match the one from the session that served the GET.
         if not _csrf_ok(request.form.get("_csrf", "")):
-            error = "Token CSRF inválido. Recarga la página e intenta de nuevo."
+            error = "Invalid CSRF token. Reload the page and try again."
             return render_template_string(
                 _LOGIN_TEMPLATE,
                 error=error,
@@ -467,17 +467,17 @@ def login():
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if _check_credentials(username, password):
-            # Sesión opt-in a permanent para que aplique el lifetime.
+            # Session opt-in to permanent so lifetime applies.
             session.clear()
             session.permanent        = True
             session["authenticated"] = True
             session["user"]          = username
-            # Rotar el token CSRF tras el login.
+            # Rotate CSRF token after login.
             session["_csrf_token"]   = secrets.token_urlsafe(32)
             # Guard against open-redirect: only allow relative paths.
             safe_next = next_url if next_url.startswith("/") else "/"
             return redirect(safe_next)
-        error = "Credenciales incorrectas. Inténtalo de nuevo."
+        error = "Invalid credentials. Try again."
 
     return render_template_string(
         _LOGIN_TEMPLATE,
@@ -500,7 +500,7 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    """Render the main HTML dashboard with paginación."""
+    """Render the main HTML dashboard with pagination."""
     try:
         page = max(1, int(request.args.get("page", 1)))
     except (TypeError, ValueError):
@@ -551,20 +551,20 @@ def api_scan_diff(scan_id: int):
 # ══════════════════════════════════════════════════════════════════
 
 def _print_startup_banner(host: str = "127.0.0.1", port: int = 5000) -> None:
-    """Print server info, bind hint y credential warnings al arrancar."""
-    print("[*] Levantando servidor táctico con autenticación...")
+    """Print server info, bind hint and credential warnings at startup."""
+    print("[*] Starting tactical server with authentication...")
     bind_label = "LAN (0.0.0.0)" if host == "0.0.0.0" else "loopback (127.0.0.1)"
-    print(f"[+] Bind: {bind_label} puerto {port}")
+    print(f"[+] Bind: {bind_label} port {port}")
     if host == "0.0.0.0":
-        print("[!] Dashboard expuesto a la LAN. Usa proxy TLS (nginx/caddy)")
-        print("    para HTTPS — las credenciales viajan en plaintext si no.")
+        print("[!] Dashboard exposed to LAN. Use a TLS proxy (nginx/caddy)")
+        print("    for HTTPS — credentials travel in plaintext otherwise.")
     if _GENERATED_PASS:
-        print(f"[!] SENTINEL_PASS no configurado — contraseña temporal generada.")
-        print(f"[+] Credenciales: usuario={_USER}  contraseña={_PASS}")
-        print(f"[!] Configura SENTINEL_PASS para producción:")
-        print(f"      export SENTINEL_PASS=\"tu_contraseña_segura\"")
+        print(f"[!] SENTINEL_PASS not configured — temporary password generated.")
+        print(f"[+] Credentials: username={_USER}  password={_PASS}")
+        print(f"[!] Configure SENTINEL_PASS for production:")
+        print(f"      export SENTINEL_PASS=\"your_secure_password\"")
     else:
-        print(f"[+] http://{host}:{port}  (usuario: {_USER})")
+        print(f"[+] http://{host}:{port}  (username: {_USER})")
 
 
 if __name__ == "__main__":

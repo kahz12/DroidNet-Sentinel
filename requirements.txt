@@ -2,15 +2,16 @@
 # pip install -r requirements.txt
 
 # Core
-# Rangos compatibles: permiten parches de seguridad sin saltos de mayor.
+# Compatible ranges: allow security patches without major version jumps.
 requests>=2.31,<3
 rich>=13.7,<14
 flask>=3.0,<4
 
-# Opcional: solo si usas deauther.py en Linux/PC
+# Optional: only if using deauther.py on Linux/PC
 # scapy>=2.5,<3
 
-# Opcional: el dashboard ya trae rate-limit y CSRF in-memory propios. Si
-# despliegas detrás de proxy reverso o con varios workers, sustitúyelos por:
-# flask-limiter>=3.5,<4   # rate-limit con backend redis/memcached
-# flask-wtf>=1.2,<2       # CSRF con tokens firmados
+# Optional: the dashboard already includes its own in-memory rate-limiting and CSRF
+# protection. If you deploy behind a reverse proxy or with multiple workers, 
+# replace them with:
+# flask-limiter>=3.5,<4   # rate-limiting with redis/memcached backend
+# flask-wtf>=1.2,<2       # CSRF with signed tokens

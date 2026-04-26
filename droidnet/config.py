@@ -56,6 +56,6 @@ def load_user_config() -> dict:
         with CONFIG_FILE.open() as fh:
             return json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
-        # Un config.json corrupto no debe romper todos los escaneos.
+        # A corrupt config.json should not break all scans.
         print(f"[!] config.json inválido ({exc}); usando defaults.")
         return defaults

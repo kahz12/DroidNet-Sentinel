@@ -47,14 +47,14 @@ NVD_API_KEY = os.environ.get("NVD_API_KEY", "")
 # Delay between NVD requests to respect rate limits
 _REQUEST_DELAY = 6.5 if not NVD_API_KEY else 1.0
 
-# Backoff exponencial para 429/403 — base 1s, hasta ~16s, max 5 reintentos.
+# Exponential backoff for 429/403 — base 1s, up to ~30s, max 5 retries.
 _BACKOFF_MAX_RETRIES = 5
 _BACKOFF_BASE        = 1.0
 _BACKOFF_CAP         = 30.0
 
-# Cache local de respuestas NVD: archivo JSON por (query, día UTC).
-# TTL implícito 24h: la clave incluye YYYYMMDD, así que pasado el día
-# el archivo ya no se considera para la query del nuevo día.
+# Local NVD response cache: JSON file per (query, UTC day).
+# Implicit 24h TTL: the key includes YYYYMMDD, so once the day passes,
+# the file is no longer considered for the new day's query.
 _CACHE_TTL_SECONDS = 24 * 3600
 
 
@@ -62,10 +62,9 @@ _CACHE_TTL_SECONDS = 24 * 3600
 #  CPE mapping (heuristic vendor:product → cpeName)
 # ══════════════════════════════════════════════════════════════════
 
-# Mapa estático para los servicios más comunes que aparecen en banners
-# nmap. Clave = product string en minúsculas (tras normalizar). Valor =
-# "vendor:product" en formato CPE 2.3. Se consulta antes de caer al
-# keywordSearch genérico.
+# Static map for the most common services appearing in nmap banners.
+# Key = normalized product string (lowercase). Value = "vendor:product"
+# in CPE 2.3 format. Queried before falling back to generic keywordSearch.
 _PRODUCT_TO_CPE: dict[str, str] = {
     "apache httpd":         "apache:http_server",
     "apache":               "apache:http_server",
@@ -97,11 +96,11 @@ _PRODUCT_TO_CPE: dict[str, str] = {
 
 def build_cpe_name(product: str, version: str) -> str | None:
     """
-    Construye un cpeName 2.3 a partir de (product, version) usando el mapa
-    estático. Devuelve None si no se conoce el vendor o falta versión.
+    Builds a cpeName 2.3 from (product, version) using the static map.
+    Returns None if vendor is unknown or version is missing.
 
-    NVD requiere la versión exacta para cpeName; sin ella el endpoint
-    rechaza la query, por lo que solo emitimos CPE si tenemos ambos.
+    NVD requires the exact version for cpeName; without it, the endpoint
+    rejects the query, so we only emit CPE if we have both.
     """
     if not version:
         return None
@@ -115,18 +114,18 @@ def build_cpe_name(product: str, version: str) -> str | None:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  NVD response cache (JSON por query+día UTC)
+#  NVD response cache (JSON per query + UTC day)
 # ══════════════════════════════════════════════════════════════════
 
 def _cache_path(query_id: str) -> Path:
-    """Ruta del archivo de cache para una query+día concreto."""
+    """Cache file path for a specific query + day."""
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     digest = hashlib.sha1(query_id.encode("utf-8")).hexdigest()[:16]
     return NVD_CACHE_DIR / f"{digest}_{day}.json"
 
 
 def _cache_load(query_id: str) -> list[dict] | None:
-    """Devuelve el resultado cacheado si existe y es fresco (<24h)."""
+    """Returns the cached result if it exists and is fresh (<24h)."""
     path = _cache_path(query_id)
     if not path.is_file():
         return None
@@ -140,7 +139,7 @@ def _cache_load(query_id: str) -> list[dict] | None:
 
 
 def _cache_store(query_id: str, results: list[dict]) -> None:
-    """Persiste *results* para *query_id* (best-effort, ignora errores I/O)."""
+    """Persists *results* for *query_id* (best-effort, ignores I/O errors)."""
     try:
         NVD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with _cache_path(query_id).open("w") as fh:
@@ -233,10 +232,10 @@ def build_search_keywords(targets: dict) -> list[dict]:
 
 def _nvd_get(params: dict, query_label: str) -> dict | None:
     """
-    GET con backoff exponencial frente a 429/403.
+    GET with exponential backoff against 429/403.
 
-    Devuelve el JSON parseado o None si fallan todos los reintentos / la
-    petición acaba en error de red. Respeta Retry-After si NVD lo envía.
+    Returns parsed JSON or None if all retries fail / network error occurs.
+    Respects Retry-After if NVD sends it.
     """
     headers = {"apiKey": NVD_API_KEY} if NVD_API_KEY else {}
 
@@ -244,14 +243,14 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
         try:
             resp = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
         except requests.RequestException as exc:
-            rprint(f"[red]  [✗] Error red NVD ({query_label}): {exc}[/red]")
+            rprint(f"[red]  [✗] NVD network error ({query_label}): {exc}[/red]")
             return None
 
         if resp.status_code == 200:
             try:
                 return resp.json()
             except ValueError as exc:
-                rprint(f"[red]  [✗] NVD devolvió JSON inválido ({query_label}): {exc}[/red]")
+                rprint(f"[red]  [✗] NVD returned invalid JSON ({query_label}): {exc}[/red]")
                 return None
 
         if resp.status_code in (429, 403):
@@ -262,21 +261,21 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
                 delay = min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
             rprint(
                 f"[yellow]  [-] NVD {resp.status_code} ({query_label}); "
-                f"backoff {delay:.1f}s (intento {attempt + 1}/{_BACKOFF_MAX_RETRIES})[/yellow]"
+                f"backoff {delay:.1f}s (attempt {attempt + 1}/{_BACKOFF_MAX_RETRIES})[/yellow]"
             )
             time.sleep(delay)
             continue
 
-        # Otros códigos: no reintentar.
-        rprint(f"[dim]  [-] NVD respondió {resp.status_code} para '{query_label}'[/dim]")
+        # Other codes: do not retry.
+        rprint(f"[dim]  [-] NVD responded {resp.status_code} for '{query_label}'[/dim]")
         return None
 
-    rprint(f"[red]  [✗] NVD: agotados los reintentos para '{query_label}'[/red]")
+    rprint(f"[red]  [✗] NVD: retries exhausted for '{query_label}'[/red]")
     return None
 
 
 def _parse_nvd_payload(data: dict) -> list[dict]:
-    """Normaliza la respuesta NVD a la lista de CVEs simplificada."""
+    """Normalizes the NVD response into a simplified CVE list."""
     results: list[dict] = []
     for item in data.get("vulnerabilities", []):
         cve = item.get("cve", {})
@@ -310,13 +309,13 @@ def query_nvd(
     cpe_name: str | None = None,
 ) -> list[dict]:
     """
-    Query NIST NVD for CVEs publicados en los últimos *days_back* días.
+    Query NIST NVD for CVEs published in the last *days_back* days.
 
-    Si se aporta *cpe_name*, se usa el parámetro `cpeName` (CPE-search,
-    mucho más preciso). En su defecto cae a `keywordSearch`.
+    If *cpe_name* is provided, `cpeName` parameter is used (CPE-search,
+    much more precise). Otherwise falls back to `keywordSearch`.
 
-    Resultados se cachean a disco por (query, día UTC) durante 24h para
-    evitar re-pegarle a NVD ante repeticiones del mismo día.
+    Results are cached to disk by (query, UTC day) for 24h to avoid
+    re-querying NVD for the same day's repetitions.
     """
     now_utc   = datetime.now(timezone.utc)
     pub_start = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000")
@@ -410,32 +409,32 @@ def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[st
     attack_hints = []
     desc_lower = desc.lower()
     if any(w in desc_lower for w in ("remote", "remotely", "unauthenticated", "network")):
-        attack_hints.append("explotable remotamente")
+        attack_hints.append("remotely exploitable")
     if any(w in desc_lower for w in ("code execution", "rce", "command injection", "arbitrary code")):
-        attack_hints.append("permite ejecucion de codigo")
+        attack_hints.append("allows code execution")
     if any(w in desc_lower for w in ("denial of service", "dos", "crash", "hang")):
-        attack_hints.append("puede causar denegacion de servicio")
+        attack_hints.append("can cause denial of service")
     if any(w in desc_lower for w in ("privilege", "escalat", "root", "admin")):
-        attack_hints.append("escalacion de privilegios")
+        attack_hints.append("privilege escalation")
     if any(w in desc_lower for w in ("information disclosure", "leak", "exfiltrat", "sensitive")):
-        attack_hints.append("fuga de informacion")
+        attack_hints.append("information leak")
     if any(w in desc_lower for w in ("authentication bypass", "auth bypass")):
-        attack_hints.append("bypass de autenticacion")
+        attack_hints.append("authentication bypass")
 
     lines = []
-    lines.append(f"Servicio afectado: {product} {version} en {ip_count} host(s)")
+    lines.append(f"Affected service: {product} {version} on {ip_count} host(s)")
 
     if attack_hints:
-        lines.append(f"Vector de ataque: {', '.join(attack_hints)}")
+        lines.append(f"Attack vector: {', '.join(attack_hints)}")
 
     if severity == "CRITICAL" or (score and score >= 9.0):
-        lines.append("ACCION REQUERIDA: Actualizar o aislar este servicio inmediatamente")
+        lines.append("ACTION REQUIRED: Update or isolate this service immediately")
     elif severity == "HIGH" or (score and score >= 7.0):
-        lines.append("Recomendacion: Priorizar actualizacion de este servicio")
+        lines.append("Recommendation: Prioritise updating this service")
     elif severity == "MEDIUM" or (score and score >= 4.0):
-        lines.append("Recomendacion: Planificar actualizacion en el proximo ciclo")
+        lines.append("Recommendation: Plan update in the next cycle")
     else:
-        lines.append("Riesgo bajo — monitorear")
+        lines.append("Low risk — monitor")
 
     return " | ".join(lines)
 
@@ -447,20 +446,20 @@ def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[st
 def display_cve_table(matches: list[dict]) -> None:
     """Render a Rich table with CVE matches."""
     if not matches:
-        rprint("[green][✓] Sin CVEs relevantes encontrados para los servicios detectados.[/green]")
+        rprint("[green][✓] No relevant CVEs found for detected services.[/green]")
         return
 
     table = Table(
-        title="[bold red]CVE-Watcher — Vulnerabilidades detectadas[/bold red]",
+        title="[bold red]CVE-Watcher — Vulnerabilities detected[/bold red]",
         show_header=True,
         header_style="bold red",
     )
     table.add_column("CVE",       style="bold white", width=18)
-    table.add_column("Severidad", justify="center",   width=10)
+    table.add_column("Severity",  justify="center",   width=10)
     table.add_column("Score",     justify="center",   width=6)
-    table.add_column("Servicio",  style="cyan",       width=22)
+    table.add_column("Service",   style="cyan",       width=22)
     table.add_column("IPs",       style="dim",        width=15)
-    table.add_column("Impacto",   style="yellow")
+    table.add_column("Impact",    style="yellow")
 
     for m in matches:
         sev_display = _SEVERITY_ICONS.get(m["severity"], m["severity"])
@@ -484,20 +483,20 @@ def display_cve_table(matches: list[dict]) -> None:
 def display_alerts_history(alerts: list[dict]) -> None:
     """Show previously saved CVE alerts from the database."""
     if not alerts:
-        rprint("[dim][-] Sin alertas CVE almacenadas.[/dim]")
+        rprint("[dim][-] No stored CVE alerts.[/dim]")
         return
 
     table = Table(
-        title="[bold cyan]Historial de alertas CVE[/bold cyan]",
+        title="[bold cyan]CVE alerts history[/bold cyan]",
         show_header=True,
         header_style="bold magenta",
     )
     table.add_column("CVE",       style="bold white", width=18)
-    table.add_column("Severidad", justify="center",   width=10)
-    table.add_column("Servicio",  style="cyan",       width=20)
+    table.add_column("Severity",  justify="center",   width=10)
+    table.add_column("Service",   style="cyan",       width=20)
     table.add_column("IP",        style="dim",        width=15)
-    table.add_column("Red",       style="white",      width=15)
-    table.add_column("Fecha",     style="dim")
+    table.add_column("Network",   style="white",      width=15)
+    table.add_column("Date",      style="dim")
 
     for a in alerts:
         sev = _SEVERITY_ICONS.get(a["severity"], a["severity"])
@@ -514,8 +513,8 @@ def _build_telegram_report(matches: list[dict], network: str) -> str:
     """Build a Markdown-formatted Telegram message for CVE alerts."""
     lines = [
         "\U0001f6a8 *CVE-Watcher Alert*\n",
-        f"\U0001f4e1 *Red:* `{network}`",
-        f"\u26a0\ufe0f *Vulnerabilidades:* {len(matches)}\n",
+        f"\U0001f4e1 *Network:* `{network}`",
+        f"\u26a0\ufe0f *Vulnerabilities:* {len(matches)}\n",
     ]
 
     for m in matches[:5]:
@@ -528,7 +527,7 @@ def _build_telegram_report(matches: list[dict], network: str) -> str:
         )
 
     if len(matches) > 5:
-        lines.append(f"\n_... y {len(matches) - 5} mas. Revisa el Command Center._")
+        lines.append(f"\n_... and {len(matches) - 5} more. Check the Command Center._")
 
     return "\n".join(lines)
 
@@ -558,8 +557,8 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
 
     rprint(
         Panel(
-            "[bold red]CVE-Watcher[/bold red] — Monitoreo de vulnerabilidades",
-            subtitle=f"[dim]Buscando CVEs de los ultimos {days_back} dias[/dim]",
+            "[bold red]CVE-Watcher[/bold red] — Vulnerability monitoring",
+            subtitle=f"[dim]Searching CVEs from the last {days_back} days[/dim]",
             style="red",
         )
     )
@@ -567,22 +566,22 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
     # Step 1: Load scan data
     scan = get_latest_scan_with_services()
     if not scan:
-        rprint("[yellow][-] No hay escaneos con servicios detectados. Ejecuta Sentinel primero.[/yellow]")
+        rprint("[yellow][-] No scans with detected services found. Run Sentinel first.[/yellow]")
         if show_history:
             display_alerts_history(get_cve_alerts())
         return []
 
     network = scan["network"]
     scan_id = scan["id"]
-    rprint(f"[*] Analizando scan de [bold white]{network}[/bold white] (ID: {scan_id})")
+    rprint(f"[*] Analysing scan from [bold white]{network}[/bold white] (ID: {scan_id})")
 
     # Step 2: Extract keywords
     keywords = build_search_keywords(scan["targets"])
     if not keywords:
-        rprint("[yellow][-] No se encontraron servicios con version identificable.[/yellow]")
+        rprint("[yellow][-] No services with identifiable version found.[/yellow]")
         return []
 
-    rprint(f"[*] {len(keywords)} servicio(s) unico(s) detectados:\n")
+    rprint(f"[*] {len(keywords)} unique service(s) detected:\n")
     for kw in keywords:
         rprint(f"    [cyan]\u2022[/cyan] {kw['keyword']} ({kw['port']}) — {', '.join(kw['ips'])}")
     rprint()
@@ -594,16 +593,16 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
         cpe_name = build_cpe_name(kw["product"], kw["version"])
         mode_tag = "CPE" if cpe_name else "keyword"
         rprint(
-            f"[bold cyan][\u2026][/bold cyan] Consultando NVD ({mode_tag}): "
+            f"[bold cyan][\u2026][/bold cyan] Querying NVD ({mode_tag}): "
             f"[yellow]{cpe_name or kw['keyword']}[/yellow]"
         )
 
         cves = query_nvd(kw["keyword"], days_back=days_back, cpe_name=cpe_name)
 
         if not cves:
-            # Try with just the product name (without version, v\u00eda keyword)
+            # Try with just the product name (without version, via keyword)
             if kw["version"]:
-                rprint(f"  [dim]Reintentando con keyword: {kw['product']}[/dim]")
+                rprint(f"  [dim]Retrying with keyword: {kw['product']}[/dim]")
                 time.sleep(_REQUEST_DELAY)
                 cves = query_nvd(kw["product"], days_back=days_back)
 
@@ -649,12 +648,12 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
         critical_count = sum(1 for m in all_matches if m["severity"] in ("CRITICAL", "HIGH"))
         send_alert(
             title="CVE-Watcher Alert",
-            local_msg=f"{len(all_matches)} CVEs encontrados ({critical_count} criticos/altos) en {network}",
+            local_msg=f"{len(all_matches)} CVEs found ({critical_count} critical/high) on {network}",
             telegram_msg=_build_telegram_report(all_matches, network),
         )
 
     if show_history:
-        rprint("\n[bold cyan]--- Historial de alertas ---[/bold cyan]")
+        rprint("\n[bold cyan]--- Alert history ---[/bold cyan]")
         display_alerts_history(get_cve_alerts(network=network))
 
     return all_matches
