@@ -136,10 +136,12 @@ def _run_hunter() -> None:
 
 def _run_dashboard() -> None:
     from droidnet.web.dashboard import app, _print_startup_banner
-    _print_startup_banner()
+    # Desde el menú interactivo el bind es siempre loopback. Para
+    # exponer a LAN, usar la CLI: `python main.py --dashboard --expose`.
+    _print_startup_banner(host="127.0.0.1")
     rprint("[dim]Ctrl+C para detener.[/dim]\n")
     try:
-        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+        app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         rprint("\n[bold yellow][!][/bold yellow] Dashboard detenido.")
 

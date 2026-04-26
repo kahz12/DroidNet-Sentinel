@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Combinar con --scan/--daemon: ejecuta corte ARP a hosts no fiables",
     )
+    parser.add_argument(
+        "--expose",
+        action="store_true",
+        help="Combinar con --dashboard: bindear a 0.0.0.0 (LAN) en vez de 127.0.0.1",
+    )
 
     parser.add_argument(
         "--spoof",
@@ -78,8 +83,9 @@ def handle_args(args: argparse.Namespace) -> bool:
 
     if args.dashboard:
         from droidnet.web.dashboard import app, _print_startup_banner
-        _print_startup_banner()
-        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+        host = "0.0.0.0" if args.expose else "127.0.0.1"
+        _print_startup_banner(host=host)
+        app.run(host=host, port=5000, debug=False, use_reloader=False)
         return True
 
     if args.reports:

@@ -9,3 +9,8 @@ flask>=3.0,<4
 
 # Opcional: solo si usas deauther.py en Linux/PC
 # scapy>=2.5,<3
+
+# Opcional: el dashboard ya trae rate-limit y CSRF in-memory propios. Si
+# despliegas detrás de proxy reverso o con varios workers, sustitúyelos por:
+# flask-limiter>=3.5,<4   # rate-limit con backend redis/memcached
+# flask-wtf>=1.2,<2       # CSRF con tokens firmados

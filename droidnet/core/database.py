@@ -91,6 +91,16 @@ def init_db() -> None:
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(cve_id, ip, service)
             );
+
+            -- Índices para consultas frecuentes del dashboard.
+            CREATE INDEX IF NOT EXISTS idx_scans_network_id
+                ON scans(network, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_hosts_scan_ip
+                ON hosts(scan_id, ip);
+            CREATE INDEX IF NOT EXISTS idx_ports_host
+                ON ports(host_id);
+            CREATE INDEX IF NOT EXISTS idx_cve_network_created
+                ON cve_alerts(network, created_at DESC);
         """)
 
 
@@ -213,10 +223,24 @@ def get_all_scans() -> list[dict]:
     return result
 
 
-def get_all_scans_with_diffs() -> list[dict]:
+def count_scans() -> int:
+    """Total number of scans stored. Útil para paginación en el dashboard."""
+    with _conn() as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM scans").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def get_all_scans_with_diffs(
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
     """
-    Return all scans (newest first) with targets and diff vs the previous
+    Return scans (newest first) with targets and diff vs the previous
     scan on the same network.
+
+    Args:
+        limit  : máximo de scans a devolver. None = sin límite (legacy).
+        offset : nº de scans a saltar (paginación).
 
     Extra keys per scan:
         new_ips      : IPs not present in the previous scan
@@ -225,7 +249,13 @@ def get_all_scans_with_diffs() -> list[dict]:
         risks        : {ip: plain-text risk label}
     """
     with _conn() as c:
-        scans = c.execute("SELECT * FROM scans ORDER BY id DESC").fetchall()
+        if limit is None:
+            scans = c.execute("SELECT * FROM scans ORDER BY id DESC").fetchall()
+        else:
+            scans = c.execute(
+                "SELECT * FROM scans ORDER BY id DESC LIMIT ? OFFSET ?",
+                (int(limit), int(offset)),
+            ).fetchall()
         result = []
 
         for scan in scans:
