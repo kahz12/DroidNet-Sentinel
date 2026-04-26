@@ -16,11 +16,23 @@ Public API:
     get_known_ips(network)      → all IPs ever seen on a network
 """
 
+import re
 import sqlite3
 from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
 from droidnet.core.risk import classify_risk  # re-exported below for back-compat
+
+
+# A "real" port line from sentinel.deep_scan starts with "<port>/<proto> open".
+# Anything else ("Escudo intacto", "Error", "Error: timeout") is a marker —
+# not an actual service.
+_OPEN_PORT_RE = re.compile(r"^\d+/(?:tcp|udp)\s+open\b")
+
+
+def _has_open_ports(ports: list[str]) -> bool:
+    """True iff *ports* contains at least one real open-port line."""
+    return any(_OPEN_PORT_RE.match(entry) for entry in ports if entry)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -371,7 +383,9 @@ def purge_old_scans(days: int) -> int:
 
 def get_latest_scan_with_services() -> dict | None:
     """
-    Return the most recent scan that has hosts with open ports (not just 'Escudo intacto').
+    Return the most recent scan that has at least one host with real open
+    ports — not just closed-host markers ("Escudo intacto") or scan errors
+    ("Error", "Error: timeout").
 
     Returns dict with keys: id, network, scan_time, targets {ip: [port_entries]}.
     """
@@ -379,11 +393,7 @@ def get_latest_scan_with_services() -> dict | None:
         scans = c.execute("SELECT * FROM scans ORDER BY id DESC LIMIT 10").fetchall()
         for scan in scans:
             targets = _hosts_for_scan(c, scan["id"])
-            has_services = any(
-                ports and ports != ["Escudo intacto"] and not (ports and "Error" in ports[0])
-                for ports in targets.values()
-            )
-            if has_services:
+            if any(_has_open_ports(ports) for ports in targets.values()):
                 d = dict(scan)
                 d["targets"] = targets
                 return d
