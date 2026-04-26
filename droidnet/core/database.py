@@ -20,11 +20,7 @@ import sqlite3
 from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
-
-# Port risk sets — single source of truth. sentinel.evaluate_risk reuses
-# classify_risk() and only adds Rich markup on top.
-_CRITICAL = {"21/tcp", "23/tcp", "445/tcp", "139/tcp", "3389/tcp"}
-_MEDIUM   = {"80/tcp", "8080/tcp", "53/tcp", "1900/tcp", "2049/tcp"}
+from droidnet.core.risk import classify_risk  # re-exported below for back-compat
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -102,28 +98,6 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_cve_network_created
                 ON cve_alerts(network, created_at DESC);
         """)
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Risk classification (plain text, no Rich markup)
-# ══════════════════════════════════════════════════════════════════
-
-def classify_risk(ports: list[str]) -> str:
-    """
-    Return a plain-text risk label for a host based on its open ports.
-
-    Possible values: MÍNIMO / BAJO / MEDIO / CRÍTICO
-    """
-    if not ports or ports == ["Escudo intacto"]:
-        return "MÍNIMO"
-    level = "BAJO"
-    for entry in ports:
-        pid = entry.split()[0]
-        if pid in _CRITICAL:
-            return "CRÍTICO"
-        if pid in _MEDIUM:
-            level = "MEDIO"
-    return level
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -375,6 +349,24 @@ def get_cve_alerts(network: str | None = None, limit: int = 50) -> list[dict]:
                 (limit,),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+def purge_old_scans(days: int) -> int:
+    """
+    Delete scans older than *days*. CASCADE removes their hosts/ports;
+    cve_alerts.scan_id flips to NULL (alerts are preserved).
+
+    Returns the number of scan rows deleted.
+    """
+    if days <= 0:
+        raise ValueError("days must be > 0")
+
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM scans WHERE created_at < datetime('now', ?)",
+            (f"-{int(days)} days",),
+        )
+        return cur.rowcount or 0
 
 
 def get_latest_scan_with_services() -> dict | None:

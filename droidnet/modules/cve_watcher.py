@@ -37,7 +37,10 @@ from droidnet.core.database import (
     save_cve_alert,
     get_cve_alerts,
 )
+from droidnet.core.logger import get_logger
 from droidnet.core.notifier import send_alert
+
+log = get_logger(__name__)
 
 console = Console()
 
@@ -263,6 +266,8 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
                 f"[yellow]  [-] NVD {resp.status_code} ({query_label}); "
                 f"backoff {delay:.1f}s (attempt {attempt + 1}/{_BACKOFF_MAX_RETRIES})[/yellow]"
             )
+            log.warning("nvd backoff status=%s query=%s delay=%.1fs attempt=%d",
+                        resp.status_code, query_label, delay, attempt + 1)
             time.sleep(delay)
             continue
 
@@ -343,7 +348,9 @@ def query_nvd(
     cached = _cache_load(cache_key)
     if cached is not None:
         rprint(f"[dim]  [cache] {query_label}[/dim]")
+        log.debug("nvd cache hit query=%s", query_label)
         return cached
+    log.debug("nvd cache miss query=%s", query_label)
 
     data = _nvd_get(params, query_label)
     if data is None:

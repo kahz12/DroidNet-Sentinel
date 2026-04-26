@@ -26,9 +26,13 @@ from droidnet.config       import (
     REPORTS_DIR,
     load_user_config,
 )
-from droidnet.core.database  import classify_risk, init_db, save_scan
+from droidnet.core.database  import init_db, save_scan, purge_old_scans
+from droidnet.core.logger    import get_logger
+from droidnet.core.risk      import classify_risk
 from droidnet.core.notifier  import send_alert
 from droidnet.platform.utils import get_default_iface, get_wifi_info
+
+log = get_logger(__name__)
 
 # Ensure the database schema exists before any scan runs.
 init_db()
@@ -328,14 +332,29 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                       hosts not listed in trusted_ips. Default is False
                       (opt-in) — ARP cutting is destructive.
     """
-    last_ssid      = None
-    last_scan_time = datetime.min
+    last_ssid       = None
+    last_scan_time  = datetime.min
+    last_purge_time = datetime.min  # daily DB retention sweep
 
     rprint("[bold yellow][!][/bold yellow] DroidNet Sentinel listo.")
 
     while True:
         info   = get_wifi_info()
         config = load_user_config()
+
+        # ── Daily DB retention sweep ─────────────────────────────
+        # Opt-out by setting db_retention_days <= 0 in config.json.
+        retention_days = int(config.get("db_retention_days", 90))
+        now_for_purge  = datetime.now()
+        if retention_days > 0 and (now_for_purge - last_purge_time) > timedelta(days=1):
+            try:
+                deleted = purge_old_scans(retention_days)
+                if deleted:
+                    log.info("db purge deleted=%d retention_days=%d",
+                             deleted, retention_days)
+            except Exception as exc:
+                log.warning("db purge failed: %s", exc)
+            last_purge_time = now_for_purge
 
         if info:
             current_ssid = info.get("ssid", "Desconocida")
@@ -350,6 +369,8 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
 
             if should_scan and my_ip and my_ip != "0.0.0.0":
                 rprint(f"\n[bold green][*][/bold green] Scan en curso: [bold white]{current_ssid}[/bold white]")
+                log.info("scan started network=%s my_ip=%s auto_cut=%s",
+                         current_ssid, my_ip, auto_cut)
 
                 excluded = config.get("excluded_ips", [])
                 if my_ip not in excluded:
@@ -364,12 +385,16 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                     save_report(current_ssid, results)
                     save_scan(current_ssid, ts, results)
                     display_results_table(current_ssid, results, metadata)
+                    log.info("scan finished network=%s hosts=%d",
+                             current_ssid, len(live_ips))
                     if auto_cut:
                         cut_unknowns(live_ips, my_ip, config)
                     else:
                         rprint("[dim][-] auto-cut desactivado. Usa --auto-cut para corte ARP.[/dim]")
                 else:
                     rprint("[yellow][-] Sin hosts detectados en la red.[/yellow]")
+                    log.warning("scan empty network=%s (sin hosts detectados)",
+                                current_ssid)
 
                 send_alert(
                     title       = "Sentinel Alert",

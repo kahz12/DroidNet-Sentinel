@@ -39,6 +39,7 @@ from flask import (
     request, session, redirect, url_for, abort,
 )
 
+from droidnet.core.logger import get_logger
 from droidnet.core.database import (
     init_db,
     get_all_scans,
@@ -46,6 +47,8 @@ from droidnet.core.database import (
     get_scan_diff,
     count_scans,
 )
+
+log = get_logger(__name__)
 
 # ── App setup ─────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -441,8 +444,10 @@ def login():
     next_url = request.args.get("next") or request.form.get("next") or "/"
 
     if request.method == "POST":
+        ip = _client_ip()
         # Rate-limit: count every POST to /login by IP in a 60s window.
-        if _login_rate_limited(_client_ip()):
+        if _login_rate_limited(ip):
+            log.warning("login rate-limited ip=%s", ip)
             error = (
                 f"Too many attempts. Wait {int(_LOGIN_WINDOW_SEC)}s "
                 f"before retrying."
@@ -456,6 +461,7 @@ def login():
 
         # CSRF: the token must match the one from the session that served the GET.
         if not _csrf_ok(request.form.get("_csrf", "")):
+            log.warning("login csrf-fail ip=%s", ip)
             error = "Invalid CSRF token. Reload the page and try again."
             return render_template_string(
                 _LOGIN_TEMPLATE,
@@ -474,9 +480,11 @@ def login():
             session["user"]          = username
             # Rotate CSRF token after login.
             session["_csrf_token"]   = secrets.token_urlsafe(32)
+            log.info("login ok user=%s ip=%s", username, ip)
             # Guard against open-redirect: only allow relative paths.
             safe_next = next_url if next_url.startswith("/") else "/"
             return redirect(safe_next)
+        log.warning("login fail user=%s ip=%s", username, ip)
         error = "Invalid credentials. Try again."
 
     return render_template_string(
