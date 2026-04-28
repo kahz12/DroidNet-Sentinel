@@ -481,7 +481,7 @@ def interactive_menu() -> None:
                 choices=_VALID_CHOICES,
                 show_choices=False,
             )
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             rprint("\n[bold yellow][!][/bold yellow] Exiting...")
             break
 
@@ -495,8 +495,7 @@ def interactive_menu() -> None:
 
         try:
             console.input("[dim]  Press Enter to return to the menu...[/dim]")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             break
 
         console.clear()
-        print_banner()

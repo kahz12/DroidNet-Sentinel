@@ -163,6 +163,7 @@ def _run_nmap_sn(args: list[str]) -> tuple[int, str]:
     try:
         proc = subprocess.run(
             args, capture_output=True, text=True, timeout=180,
+            stdin=subprocess.DEVNULL,
         )
         return proc.returncode, proc.stdout
     except subprocess.TimeoutExpired:
@@ -213,6 +214,7 @@ def _scan_one(ip: str) -> tuple[str, list[str]]:
         proc = subprocess.run(
             ["nmap", "-F", "-sV", "-T4", ip],
             capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL,
         )
         ports = re.findall(r"(\d+/tcp\s+open\s+.*)", proc.stdout)
         return ip, ([p.strip() for p in ports] if ports else ["Escudo intacto"])

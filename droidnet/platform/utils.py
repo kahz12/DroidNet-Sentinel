@@ -95,7 +95,7 @@ def get_default_iface() -> str:
     try:
         proc = subprocess.run(
             ["ip", "route", "show", "default"],
-            capture_output=True, text=True
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         match = re.search(r"dev\s+(\S+)", proc.stdout)
         if match:
@@ -120,7 +120,10 @@ def get_default_iface() -> str:
 def _get_local_ip() -> str | None:
     """Return the primary local IP address of the host."""
     try:
-        proc = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+        proc = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
         ips = proc.stdout.strip().split()
         if ips:
             return ips[0]
@@ -129,7 +132,8 @@ def _get_local_ip() -> str | None:
 
     try:
         proc = subprocess.run(
-            ["ip", "route", "get", "1"], capture_output=True, text=True
+            ["ip", "route", "get", "1"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         match = re.search(r"src\s+(\S+)", proc.stdout)
         if match:
@@ -144,7 +148,8 @@ def _get_wifi_info_termux() -> dict | None:
     import json as _json
     try:
         proc = subprocess.run(
-            ["termux-wifi-connectioninfo"], capture_output=True, text=True
+            ["termux-wifi-connectioninfo"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         data = _json.loads(proc.stdout)
         if data.get("supplicant_state") == "COMPLETED":
@@ -163,7 +168,7 @@ def _get_wifi_info_nmcli() -> dict | None:
     try:
         proc = subprocess.run(
             ["nmcli", "-t", "-f", "active,ssid,bssid", "dev", "wifi"],
-            capture_output=True, text=True
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             return None
@@ -185,7 +190,10 @@ def _get_wifi_info_nmcli() -> dict | None:
 def _get_wifi_info_iwconfig() -> dict | None:
     try:
         iface = get_default_iface()
-        proc  = subprocess.run(["iwconfig", iface], capture_output=True, text=True)
+        proc  = subprocess.run(
+            ["iwconfig", iface],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
         if proc.returncode != 0:
             return None
 
@@ -248,7 +256,7 @@ def send_notification(title: str, message: str) -> None:
         try:
             subprocess.run(
                 ["termux-notification", "-t", title, "-c", message],
-                capture_output=True
+                capture_output=True, stdin=subprocess.DEVNULL, timeout=5,
             )
             return
         except Exception:
@@ -258,7 +266,7 @@ def send_notification(title: str, message: str) -> None:
             try:
                 subprocess.run(
                     ["notify-send", "-t", "5000", title, message],
-                    capture_output=True
+                    capture_output=True, stdin=subprocess.DEVNULL, timeout=5,
                 )
                 return
             except Exception:
