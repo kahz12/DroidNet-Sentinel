@@ -9,6 +9,7 @@ Supported platforms:
     Linux PC          → nmcli / iwconfig, notify-send
 """
 
+import functools
 import os
 import re
 import platform
@@ -22,6 +23,7 @@ from rich import print as rprint
 #  Platform detection
 # ══════════════════════════════════════════════════════════════════
 
+@functools.cache
 def is_termux() -> bool:
     """Return True when running inside Termux on Android."""
     return "com.termux" in os.environ.get("PREFIX", "")
@@ -36,6 +38,7 @@ def get_platform_name() -> str:
 #  Privilege check
 # ══════════════════════════════════════════════════════════════════
 
+@functools.cache
 def check_root() -> bool:
     """Return True if the process is running as root/superuser."""
     if hasattr(os, "geteuid"):
@@ -113,23 +116,40 @@ def get_default_iface() -> str:
     return "wlan0"
 
 
+def get_default_gateway(local_ip: str | None = None) -> str | None:
+    """
+    Return the LAN default-gateway IP.
+
+    Strategy:
+        Parse ``ip route show default`` for the ``via <addr>`` field. If that
+        fails (no route, busybox without the field, etc.) and *local_ip* is a
+        dotted IPv4 address, fall back to the conventional ``.1`` host of that
+        /24. Returns None when neither path yields an address.
+    """
+    try:
+        proc = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
+        match = re.search(r"via\s+(\S+)", proc.stdout)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+
+    if local_ip and local_ip.count(".") == 3:
+        return ".".join(local_ip.split(".")[:-1]) + ".1"
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════
 #  WiFi info — cross-platform
 # ══════════════════════════════════════════════════════════════════
 
 def _get_local_ip() -> str | None:
     """Return the primary local IP address of the host."""
-    try:
-        proc = subprocess.run(
-            ["hostname", "-I"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-        )
-        ips = proc.stdout.strip().split()
-        if ips:
-            return ips[0]
-    except Exception:
-        pass
-
+    # `ip route get` works on every Linux distro and on Termux/busybox;
+    # `hostname -I` is a glibc-only extension, so it's only the fallback.
     try:
         proc = subprocess.run(
             ["ip", "route", "get", "1"],
@@ -138,6 +158,17 @@ def _get_local_ip() -> str | None:
         match = re.search(r"src\s+(\S+)", proc.stdout)
         if match:
             return match.group(1)
+    except Exception:
+        pass
+
+    try:
+        proc = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
+        ips = proc.stdout.strip().split()
+        if ips:
+            return ips[0]
     except Exception:
         pass
 
@@ -169,12 +200,15 @@ def _get_wifi_info_nmcli() -> dict | None:
         proc = subprocess.run(
             ["nmcli", "-t", "-f", "active,ssid,bssid", "dev", "wifi"],
             capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            # Force the C locale so the "active" field is always "yes"/"no",
+            # not a locale-translated value.
+            env={**os.environ, "LC_ALL": "C"},
         )
         if proc.returncode != 0:
             return None
 
         for line in proc.stdout.strip().split("\n"):
-            if line.lower().startswith(("yes:", "sí:", "si:")):
+            if line.lower().startswith("yes:"):
                 parts = line.split(":")
                 ssid      = parts[1] if len(parts) > 1 else "Unknown"
                 bssid_raw = ":".join(parts[2:]) if len(parts) > 2 else "Unknown"

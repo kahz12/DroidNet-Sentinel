@@ -200,11 +200,11 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
 
 if __name__ == "__main__":
     if not check_root():
-        rprint("[red][✗] Necesitas root.[/red]")
+        rprint("[red][✗] Root required.[/red]")
         sys.exit(1)
 
     if len(sys.argv) < 3:
-        rprint("[yellow]Uso: python -m droidnet.modules.spoofer <IP_VICTIMA> <IP_GATEWAY> [IFACE][/yellow]")
+        rprint("[yellow]Usage: python -m droidnet.modules.spoofer <VICTIM_IP> <GATEWAY_IP> [IFACE][/yellow]")
         sys.exit(1)
 
     _target  = sys.argv[1]

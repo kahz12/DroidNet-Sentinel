@@ -13,6 +13,7 @@ need to be hard-coded. Set them once in ~/.bashrc or ~/.zshrc:
 
 import os
 import json
+import ipaddress
 from pathlib import Path
 
 # ── Project root ──────────────────────────────────────────────────
@@ -44,6 +45,29 @@ _CONFIG_SCHEMA: dict = {
 }
 
 
+# Schema keys whose list entries must be valid IP addresses or CIDR ranges.
+_IP_LIST_KEYS = frozenset({"excluded_ips", "trusted_ips"})
+
+
+def _is_ip_or_cidr(value: str) -> bool:
+    """True if *value* parses as an IPv4/IPv6 address or CIDR network."""
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def _fresh_default(default):
+    """
+    Return a copy of *default* so callers never share mutable schema state.
+
+    The schema holds a single ``[]`` per list field; lists are copied per call
+    so each returned config gets its own, while scalars pass through unchanged.
+    """
+    return list(default) if isinstance(default, list) else default
+
+
 def _validate_config(raw: dict) -> dict:
     """
     Coerce *raw* (parsed JSON) to the declared _CONFIG_SCHEMA.
@@ -53,33 +77,39 @@ def _validate_config(raw: dict) -> dict:
     Returns a new dict — never raises.
     """
     if not isinstance(raw, dict):
-        print(f"[!] config.json: top-level no es objeto JSON ({type(raw).__name__}); usando defaults.")
-        return {key: default for key, (_, _, default) in _CONFIG_SCHEMA.items()}
+        print(f"[!] config.json: top-level is not a JSON object ({type(raw).__name__}); using defaults.")
+        return {key: _fresh_default(default) for key, (_, _, default) in _CONFIG_SCHEMA.items()}
 
     out: dict = {}
     for key, (expected_type, elem_type, default) in _CONFIG_SCHEMA.items():
         if key not in raw:
-            out[key] = default
+            out[key] = _fresh_default(default)
             continue
         value = raw[key]
         if not isinstance(value, expected_type) or isinstance(value, bool):
             # bool is a subclass of int, reject it explicitly for int fields.
-            print(f"[!] config.json['{key}']: tipo inválido "
-                  f"({type(value).__name__}, se esperaba {expected_type.__name__}); usando default.")
-            out[key] = default
+            print(f"[!] config.json['{key}']: invalid type "
+                  f"({type(value).__name__}, expected {expected_type.__name__}); using default.")
+            out[key] = _fresh_default(default)
             continue
         if elem_type is not None:  # list with element type
             cleaned = [v for v in value if isinstance(v, elem_type)]
             if len(cleaned) != len(value):
                 bad = len(value) - len(cleaned)
-                print(f"[!] config.json['{key}']: descartando {bad} entrada(s) no-{elem_type.__name__}.")
+                print(f"[!] config.json['{key}']: discarding {bad} non-{elem_type.__name__} entry(ies).")
+            if key in _IP_LIST_KEYS:
+                valid = [v for v in cleaned if _is_ip_or_cidr(v)]
+                if len(valid) != len(cleaned):
+                    bad = len(cleaned) - len(valid)
+                    print(f"[!] config.json['{key}']: discarding {bad} invalid IP/CIDR entry(ies).")
+                cleaned = valid
             out[key] = cleaned
         else:
             out[key] = value
 
     extra = set(raw) - set(_CONFIG_SCHEMA)
     if extra:
-        print(f"[!] config.json: claves no reconocidas {sorted(extra)} (ignoradas).")
+        print(f"[!] config.json: unrecognised keys {sorted(extra)} (ignored).")
     return out
 
 
@@ -98,7 +128,7 @@ def load_user_config() -> dict:
         dict: Validated config (always with all schema keys), or defaults
         if the file is missing/corrupt.
     """
-    defaults = {key: default for key, (_, _, default) in _CONFIG_SCHEMA.items()}
+    defaults = {key: _fresh_default(default) for key, (_, _, default) in _CONFIG_SCHEMA.items()}
     if not CONFIG_FILE.exists():
         return defaults
     try:
@@ -106,6 +136,6 @@ def load_user_config() -> dict:
             raw = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
         # A corrupt config.json should not break all scans.
-        print(f"[!] config.json inválido ({exc}); usando defaults.")
+        print(f"[!] config.json invalid ({exc}); using defaults.")
         return defaults
     return _validate_config(raw)

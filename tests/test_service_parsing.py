@@ -28,7 +28,7 @@ def test_parse_no_version():
 
 
 def test_parse_returns_none_for_marker():
-    assert parse_service_info("Escudo intacto") is None
+    assert parse_service_info("Shield intact") is None
 
 
 def test_parse_returns_none_for_error():
@@ -48,7 +48,7 @@ def test_clean_strips_parens_and_returns_query():
 
 
 def test_clean_returns_none_for_marker():
-    assert clean_service_name("Escudo intacto") is None
+    assert clean_service_name("Shield intact") is None
 
 
 def test_clean_returns_none_for_short_line():

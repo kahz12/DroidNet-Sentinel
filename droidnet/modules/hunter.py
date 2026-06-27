@@ -3,10 +3,10 @@ Exploit Lookup Module — cross-references scan results with Exploit-DB.
 
 Takes the most recent Sentinel JSON report and searches each detected
 service against the local Exploit-DB via searchsploit. If searchsploit
-no está disponible, hace fallback a la API pública de Vulners.
+is unavailable, it falls back to the public Vulners API.
 
 Requires:
-    searchsploit — part of the exploitdb project (recomendado)
+    searchsploit — part of the exploitdb project (recommended)
     Linux: sudo apt install exploitdb
     Termux: exploitdb is NOT available as a Termux package.
             Clone the repository manually:
@@ -14,8 +14,8 @@ Requires:
               ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
     Update DB: searchsploit -u
 
-Fallback online: si searchsploit no se encuentra en PATH, se usa la API
-pública de Vulners (rate-limited, sin API key).
+Online fallback: if searchsploit is not found in PATH, the public Vulners
+API is used (rate-limited, no API key).
 """
 
 import json
@@ -32,11 +32,15 @@ from droidnet.config import REPORTS_DIR
 
 console = Console()
 
-# Detect searchsploit una sola vez al cargar el módulo.
-_SEARCHSPLOIT_PATH: str | None = shutil.which("searchsploit")
+def _searchsploit_path() -> str | None:
+    """
+    Locate the searchsploit binary. Probed lazily on each call so a long-lived
+    daemon picks up an `apt install exploitdb` performed after start-up.
+    """
+    return shutil.which("searchsploit")
 
-# Cache de queries para evitar N consultas idénticas cuando el mismo
-# servicio aparece en N hosts. Vive durante la ejecución del módulo.
+# Query cache to avoid N identical lookups when the same service appears on
+# N hosts. Lives for the duration of the module run.
 _EXPLOIT_CACHE: dict[str, list[dict]] = {}
 
 
@@ -63,7 +67,7 @@ def clean_service_name(raw_service: str) -> str | None:
     Returns None for lines that cannot be parsed (markers, errors).
     """
     parts = raw_service.split()
-    if len(parts) < 4 or "Escudo" in raw_service or "Error" in raw_service:
+    if len(parts) < 4 or "Shield" in raw_service or "Error" in raw_service:
         return None
 
     query = " ".join(parts[3:])
@@ -81,7 +85,7 @@ def _hunt_exploits_local(query: str) -> list[dict]:
             timeout=30,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        rprint(f"[red]Error consultando Exploit-DB local: {exc}[/red]")
+        rprint(f"[red]Error querying local Exploit-DB: {exc}[/red]")
         return []
 
     if proc.returncode != 0 or not proc.stdout:
@@ -90,7 +94,7 @@ def _hunt_exploits_local(query: str) -> list[dict]:
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        rprint(f"[yellow]searchsploit devolvió salida no-JSON para '{query}': {exc}[/yellow]")
+        rprint(f"[yellow]searchsploit returned non-JSON output for '{query}': {exc}[/yellow]")
         return []
 
     return data.get("RESULTS_EXPLOIT", [])
@@ -98,9 +102,9 @@ def _hunt_exploits_local(query: str) -> list[dict]:
 
 def _hunt_exploits_online(query: str) -> list[dict]:
     """
-    Fallback online vía API pública de Vulners (sin API key, rate-limited).
+    Online fallback via the public Vulners API (no API key, rate-limited).
 
-    Normaliza la respuesta al mismo shape que searchsploit local:
+    Normalises the response to the same shape as local searchsploit:
     [{"Title": ..., "Path": ..., "Date_Published": ...}]
     """
     try:
@@ -113,7 +117,7 @@ def _hunt_exploits_online(query: str) -> list[dict]:
         resp.raise_for_status()
         payload = resp.json()
     except (requests.RequestException, ValueError) as exc:
-        rprint(f"[yellow]Fallback online falló para '{query}': {exc}[/yellow]")
+        rprint(f"[yellow]Online fallback failed for '{query}': {exc}[/yellow]")
         return []
 
     results: list[dict] = []
@@ -121,7 +125,7 @@ def _hunt_exploits_online(query: str) -> list[dict]:
         src = item.get("_source", {})
         published = (src.get("published") or "")[:10]
         results.append({
-            "Title":          src.get("title", "Desconocido"),
+            "Title":          src.get("title", "Unknown"),
             "Path":           src.get("href") or src.get("id", ""),
             "Date_Published": published,
         })
@@ -139,12 +143,12 @@ def hunt_exploits(query: str) -> list[dict]:
     if query in _EXPLOIT_CACHE:
         return _EXPLOIT_CACHE[query]
 
-    if _SEARCHSPLOIT_PATH:
+    if _searchsploit_path():
         results = _hunt_exploits_local(query)
     else:
         results = _hunt_exploits_online(query)
 
-    # Orden descendente por Date_Published; entradas sin fecha al final.
+    # Descending order by Date_Published; entries without a date go last.
     results.sort(key=lambda ex: ex.get("Date_Published") or "", reverse=True)
 
     _EXPLOIT_CACHE[query] = results
@@ -158,29 +162,29 @@ def run_hunter() -> None:
     Loads the latest Sentinel report, iterates over each scanned host
     and service, queries Exploit-DB, and prints results to the terminal.
     """
-    rprint("[bold red][☠][/bold red] Iniciando módulo DroidNet Hunter...")
+    rprint("[bold red][☠][/bold red] Starting DroidNet Hunter module...")
 
-    if not _SEARCHSPLOIT_PATH:
+    if not _searchsploit_path():
         rprint(
-            "[yellow][!] searchsploit no encontrado en PATH; "
-            "usando fallback online (Vulners, rate-limited).[/yellow]"
+            "[yellow][!] searchsploit not found in PATH; "
+            "using online fallback (Vulners, rate-limited).[/yellow]"
         )
 
     latest = get_latest_report()
     if not latest:
-        rprint("[yellow][-] No hay reportes de Sentinel. Ejecuta un escaneo primero.[/yellow]")
+        rprint("[yellow][-] No Sentinel reports found. Run a scan first.[/yellow]")
         return
 
-    rprint(f"[*] Cargando último escaneo: [bold white]{latest}[/bold white]")
+    rprint(f"[*] Loading latest scan: [bold white]{latest}[/bold white]")
 
     with open(latest) as fh:
         data = json.load(fh)
 
     for ip, services in data.get("targets", {}).items():
-        if "Escudo intacto" in services or (services and "Error" in services[0]):
+        if "Shield intact" in services or (services and "Error" in services[0]):
             continue
 
-        rprint(f"\n[bold green][+][/bold green] Analizando: [bold cyan]{ip}[/bold cyan]")
+        rprint(f"\n[bold green][+][/bold green] Analysing: [bold cyan]{ip}[/bold cyan]")
 
         for raw in services:
             query = clean_service_name(raw)
@@ -192,23 +196,23 @@ def run_hunter() -> None:
 
             if exploits:
                 table = Table(show_header=True, header_style="bold red")
-                table.add_column("Fecha",         style="cyan",  width=12)
+                table.add_column("Date",          style="cyan",  width=12)
                 table.add_column("Exploit Title", style="white")
                 table.add_column("Path / EDB-ID", style="dim",   justify="right")
 
                 for ex in exploits[:5]:
                     table.add_row(
                         ex.get("Date_Published", "") or "—",
-                        ex.get("Title", "Desconocido"),
+                        ex.get("Title", "Unknown"),
                         ex.get("Path", ""),
                     )
 
                 console.print(table)
 
                 if len(exploits) > 5:
-                    rprint(f"  [dim]... y {len(exploits) - 5} exploits más ocultos.[/dim]")
+                    rprint(f"  [dim]... and {len(exploits) - 5} more exploits hidden.[/dim]")
             else:
-                rprint("  [dim][-] Sin exploits públicos verificados.[/dim]")
+                rprint("  [dim][-] No verified public exploits.[/dim]")
 
 
 if __name__ == "__main__":

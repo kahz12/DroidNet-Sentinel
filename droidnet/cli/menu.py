@@ -20,7 +20,10 @@ from rich.text      import Text
 
 from droidnet           import __version__
 from droidnet.config    import REPORTS_DIR
+from droidnet.core.logger import get_logger
 from droidnet.platform.utils import check_root, get_default_iface
+
+log = get_logger(__name__)
 
 console = Console()
 
@@ -228,16 +231,16 @@ def _help_risk() -> Panel:
     table.add_column("Trigger", width=36)
     table.add_column("Meaning")
 
-    table.add_row("[bold red]CRÍTICO[/bold red]",
+    table.add_row("[bold red]CRITICAL[/bold red]",
                   "FTP / Telnet / SMB / NetBIOS / RDP",
                   "High-impact service that should not be exposed.")
-    table.add_row("[bold yellow]MEDIO[/bold yellow]",
+    table.add_row("[bold yellow]MEDIUM[/bold yellow]",
                   "HTTP / HTTP-alt / DNS / SSDP / NFS",
                   "LAN-exposed service. Worth a banner check.")
-    table.add_row("[bold blue]BAJO[/bold blue]",
+    table.add_row("[bold blue]LOW[/bold blue]",
                   "Other open ports",
                   "Open service outside the higher tiers.")
-    table.add_row("[bold green]MÍNIMO[/bold green]",
+    table.add_row("[bold green]MINIMAL[/bold green]",
                   "No open ports",
                   "Reachable host with no services.")
     return Panel(
@@ -441,11 +444,12 @@ def list_reports() -> None:
             ts = data.get("time", "")
             try:
                 ts = datetime.strptime(ts, "%Y%m%d_%H%M%S").strftime("%d/%m/%Y %H:%M")
-            except Exception:
-                pass
+            except (ValueError, TypeError) as exc:
+                log.debug("report %s: unparseable time %r (%s)", path.name, ts, exc)
             hosts = str(len(data.get("targets", {})))
             table.add_row(str(i), data.get("network", "?"), ts, hosts, path.name)
-        except Exception:
+        except Exception as exc:
+            log.debug("report %s: could not read (%s)", path.name, exc)
             table.add_row(str(i), "?", "?", "?", path.name)
 
     console.print("\n", table, "\n")

@@ -165,7 +165,7 @@ def parse_service_info(port_entry: str) -> dict | None:
 
     Returns None for unparseable entries.
     """
-    if "Escudo" in port_entry or "Error" in port_entry:
+    if "Shield" in port_entry or "Error" in port_entry:
         return None
 
     parts = port_entry.split()
@@ -279,6 +279,20 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
     return None
 
 
+def _extract_cwes(cve: dict) -> list[str]:
+    """Return the CWE identifiers listed in the CVE's weaknesses block."""
+    cwes: list[str] = []
+    for weakness in cve.get("weaknesses", []):
+        if not isinstance(weakness, dict):
+            continue
+        for d in weakness.get("description", []):
+            if isinstance(d, dict):
+                value = d.get("value", "")
+                if value.startswith("CWE-") and value not in cwes:
+                    cwes.append(value)
+    return cwes
+
+
 def _parse_nvd_payload(data: dict) -> list[dict]:
     """Normalizes the NVD response into a simplified CVE list."""
     results: list[dict] = []
@@ -286,15 +300,17 @@ def _parse_nvd_payload(data: dict) -> list[dict]:
         cve = item.get("cve", {})
         cve_id = cve.get("id", "?")
 
-        # Extract description (prefer English)
+        # Extract description (prefer English). Guard against malformed NVD
+        # payloads where a description entry is not a dict.
         desc = ""
-        for d in cve.get("descriptions", []):
-            if d.get("lang") == "en":
+        descs = cve.get("descriptions", [])
+        for d in descs:
+            if isinstance(d, dict) and d.get("lang") == "en":
                 desc = d.get("value", "")
                 break
         if not desc:
-            descs = cve.get("descriptions", [])
-            desc = descs[0].get("value", "") if descs else ""
+            first = descs[0] if descs else None
+            desc = first.get("value", "") if isinstance(first, dict) else ""
 
         score, severity = _extract_cvss(cve)
 
@@ -304,6 +320,10 @@ def _parse_nvd_payload(data: dict) -> list[dict]:
             "score":       score,
             "severity":    severity,
             "published":   cve.get("published", ""),
+            "cwes":        _extract_cwes(cve),
+            # Present in the NVD record only when CISA lists the CVE as a Known
+            # Exploited Vulnerability (actively exploited in the wild).
+            "kev":         bool(cve.get("cisaExploitAdd")),
         })
     return results
 
@@ -431,10 +451,17 @@ def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[st
     lines = []
     lines.append(f"Affected service: {product} {version} on {ip_count} host(s)")
 
+    if cve.get("kev"):
+        lines.append("CISA KEV: known exploited in the wild")
+
     if attack_hints:
         lines.append(f"Attack vector: {', '.join(attack_hints)}")
 
-    if severity == "CRITICAL" or (score and score >= 9.0):
+    cwes = cve.get("cwes") or []
+    if cwes:
+        lines.append(f"Weakness: {', '.join(cwes)}")
+
+    if cve.get("kev") or severity == "CRITICAL" or (score and score >= 9.0):
         lines.append("ACTION REQUIRED: Update or isolate this service immediately")
     elif severity == "HIGH" or (score and score >= 7.0):
         lines.append("Recommendation: Prioritise updating this service")

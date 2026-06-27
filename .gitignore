@@ -31,9 +31,6 @@ reports/
 # ── Local NVD cache (CVE-Watcher) ─────────────────────────────────
 nvd_cache/
 
-# ── Internal audit reports ────────────────────────────────
-INFORME_AUDITORIA.txt
-
 # ── Credentials and sensitive configuration ─────────────────────────
 .env
 *.env

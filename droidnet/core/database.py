@@ -25,7 +25,7 @@ from droidnet.core.risk import classify_risk  # re-exported below for back-compa
 
 
 # A "real" port line from sentinel.deep_scan starts with "<port>/<proto> open".
-# Anything else ("Escudo intacto", "Error", "Error: timeout") is a marker —
+# Anything else ("Shield intact", "Error", "Error: timeout") is a marker —
 # not an actual service.
 _OPEN_PORT_RE = re.compile(r"^\d+/(?:tcp|udp)\s+open\b")
 
@@ -62,6 +62,9 @@ def _conn():
 def init_db() -> None:
     """Create all tables if they do not exist. Safe to call repeatedly."""
     with _conn() as c:
+        # WAL lets the dashboard read while the daemon writes, without blocking.
+        # The mode persists in the database file, so setting it once is enough.
+        c.execute("PRAGMA journal_mode=WAL")
         c.executescript("""
             CREATE TABLE IF NOT EXISTS scans (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +78,7 @@ def init_db() -> None:
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
                 ip      TEXT    NOT NULL,
-                risk    TEXT    NOT NULL DEFAULT 'MÍNIMO',
+                risk    TEXT    NOT NULL DEFAULT 'MINIMAL',
                 UNIQUE(scan_id, ip)
             );
 
@@ -97,7 +100,7 @@ def init_db() -> None:
                 network     TEXT    NOT NULL,
                 scan_id     INTEGER REFERENCES scans(id) ON DELETE SET NULL,
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(cve_id, ip, service)
+                UNIQUE(cve_id, ip, service, network)
             );
 
             -- Indexes for frequent dashboard queries.
@@ -110,6 +113,53 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_cve_network_created
                 ON cve_alerts(network, created_at DESC);
         """)
+
+        # One-time data migration: rename legacy Spanish risk labels and the
+        # closed-host marker to their English equivalents. Idempotent — the
+        # WHERE clauses only match rows written by older versions.
+        c.execute("UPDATE hosts SET risk = 'MINIMAL'  WHERE risk = 'MÍNIMO'")
+        c.execute("UPDATE hosts SET risk = 'LOW'      WHERE risk = 'BAJO'")
+        c.execute("UPDATE hosts SET risk = 'MEDIUM'   WHERE risk = 'MEDIO'")
+        c.execute("UPDATE hosts SET risk = 'CRITICAL' WHERE risk = 'CRÍTICO'")
+        c.execute("UPDATE ports SET port_entry = 'Shield intact' "
+                  "WHERE port_entry = 'Escudo intacto'")
+
+        # Schema migration: an older cve_alerts table keyed on
+        # UNIQUE(cve_id, ip, service) is rebuilt to include `network`, so the
+        # same CVE/ip/service registers separately per network. CREATE TABLE
+        # IF NOT EXISTS never alters an existing table, so this is explicit.
+        existing = c.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cve_alerts'"
+        ).fetchone()
+        if existing and existing["sql"] and "service, network)" not in existing["sql"]:
+            c.execute("""
+                CREATE TABLE cve_alerts_migrated (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cve_id      TEXT    NOT NULL,
+                    severity    TEXT    NOT NULL DEFAULT 'UNKNOWN',
+                    score       REAL,
+                    service     TEXT    NOT NULL,
+                    ip          TEXT    NOT NULL,
+                    summary     TEXT    NOT NULL,
+                    impact      TEXT,
+                    network     TEXT    NOT NULL,
+                    scan_id     INTEGER REFERENCES scans(id) ON DELETE SET NULL,
+                    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(cve_id, ip, service, network)
+                )
+            """)
+            c.execute("""
+                INSERT INTO cve_alerts_migrated
+                    (id, cve_id, severity, score, service, ip, summary,
+                     impact, network, scan_id, created_at)
+                SELECT id, cve_id, severity, score, service, ip, summary,
+                       impact, network, scan_id, created_at
+                FROM cve_alerts
+            """)
+            c.execute("DROP TABLE cve_alerts")
+            c.execute("ALTER TABLE cve_alerts_migrated RENAME TO cve_alerts")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_cve_network_created "
+                      "ON cve_alerts(network, created_at DESC)")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -368,10 +418,11 @@ def purge_old_scans(days: int) -> int:
     Delete scans older than *days*. CASCADE removes their hosts/ports;
     cve_alerts.scan_id flips to NULL (alerts are preserved).
 
-    Returns the number of scan rows deleted.
+    Returns the number of scan rows deleted. A non-positive *days* is treated
+    as an opt-out (retention disabled) and returns 0 without deleting anything.
     """
     if days <= 0:
-        raise ValueError("days must be > 0")
+        return 0
 
     with _conn() as c:
         cur = c.execute(
@@ -384,7 +435,7 @@ def purge_old_scans(days: int) -> int:
 def get_latest_scan_with_services() -> dict | None:
     """
     Return the most recent scan that has at least one host with real open
-    ports — not just closed-host markers ("Escudo intacto") or scan errors
+    ports — not just closed-host markers ("Shield intact") or scan errors
     ("Error", "Error: timeout").
 
     Returns dict with keys: id, network, scan_time, targets {ip: [port_entries]}.

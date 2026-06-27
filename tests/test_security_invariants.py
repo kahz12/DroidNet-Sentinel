@@ -1,5 +1,5 @@
 """
-Regression guards for the [OK] items in the audit report.
+Source-level guards for the project's security invariants.
 
 These tests do not exercise behaviour — they enforce invariants by
 scanning the source tree. If a future commit reintroduces shell=True,
@@ -27,7 +27,7 @@ def _python_files() -> list[Path]:
 def test_no_subprocess_shell_true():
     """
     subprocess.run / Popen must always receive a list, never shell=True.
-    Catches the audit's [OK] "no shell injection" claim regressing.
+    Enforces the "no shell injection" invariant.
     """
     pattern = re.compile(r"shell\s*=\s*True")
     offenders: list[str] = []
@@ -47,7 +47,7 @@ def test_no_subprocess_shell_true():
 def test_no_requests_verify_false():
     """
     requests.get / post / Session must never pass verify=False.
-    Catches the audit's [OK] "TLS to NVD/Telegram" claim regressing.
+    Enforces the "TLS to NVD/Telegram" invariant.
     """
     pattern = re.compile(r"verify\s*=\s*False")
     offenders: list[str] = []
@@ -104,8 +104,8 @@ def test_scan_id_route_uses_int_converter():
 def test_ssid_path_uses_sanitizer():
     """
     save_report() must run the SSID through _sanitize_ssid before joining
-    it to REPORTS_DIR. Catches the audit's [OK] "path traversal closed"
-    claim regressing if someone refactors the function.
+    it to REPORTS_DIR, enforcing the "path traversal closed" invariant if
+    someone refactors the function.
     """
     src = (DROIDNET / "modules" / "sentinel.py").read_text()
     tree = ast.parse(src)

@@ -30,12 +30,9 @@ from droidnet.core.database  import init_db, save_scan, purge_old_scans
 from droidnet.core.logger    import get_logger
 from droidnet.core.risk      import classify_risk
 from droidnet.core.notifier  import send_alert, escape_markdown
-from droidnet.platform.utils import get_default_iface, get_wifi_info
+from droidnet.platform.utils import get_default_iface, get_default_gateway, get_wifi_info
 
 log = get_logger(__name__)
-
-# Ensure the database schema exists before any scan runs.
-init_db()
 
 console = Console()
 
@@ -43,20 +40,21 @@ console = Console()
 # ══════════════════════════════════════════════════════════════════
 #  Risk evaluation
 # ══════════════════════════════════════════════════════════════════
-# Single source of truth for port→risk mapping lives en core.database
-# (classify_risk). Aquí solo decoramos con markup de Rich para la TUI.
+# Single source of truth for the port→risk mapping lives in core.database
+# (classify_risk). Here we only decorate it with Rich markup for the TUI.
 
 _RISK_MARKUP = {
-    "MÍNIMO":  "[bold green]MÍNIMO[/bold green]",
-    "BAJO":    "[bold green]BAJO[/bold green]",
-    "MEDIO":   "[bold yellow]MEDIO[/bold yellow]",
-    "CRÍTICO": "[bold red]CRÍTICO[/bold red]",
+    "MINIMAL":  "[bold green]MINIMAL[/bold green]",
+    "LOW":      "[bold blue]LOW[/bold blue]",   # blue — matches README + dashboard
+    "MEDIUM":   "[bold yellow]MEDIUM[/bold yellow]",
+    "CRITICAL": "[bold red]CRITICAL[/bold red]",
 }
 
 
 def evaluate_risk(ports: list[str]) -> str:
     """Return the Rich-markup version of classify_risk(ports)."""
-    return _RISK_MARKUP.get(classify_risk(ports), classify_risk(ports))
+    label = classify_risk(ports)
+    return _RISK_MARKUP.get(label, label)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -72,24 +70,24 @@ def display_results_table(
     Render a Rich table with scan results.
 
     Args:
-        ssid      : Network name shown en el título.
-        scan_data : {ip: [port_entries]} de deep_scan.
-        metadata  : Opcional {ip: {hostname, mac, vendor}} de ping_sweep
-                    para enriquecer la tabla con columnas extra.
+        ssid      : Network name shown in the title.
+        scan_data : {ip: [port_entries]} from deep_scan.
+        metadata  : Optional {ip: {hostname, mac, vendor}} from ping_sweep
+                    to enrich the table with extra columns.
     """
     metadata = metadata or {}
 
     table = Table(
-        title        = f"[bold cyan]Auditoría Sentinel: {ssid}[/bold cyan]",
+        title        = f"[bold cyan]Sentinel audit: {ssid}[/bold cyan]",
         show_header  = True,
         header_style = "bold magenta",
     )
-    table.add_column("Objetivo (IP)",     style="dim",   width=15)
+    table.add_column("Target (IP)",       style="dim",   width=15)
     table.add_column("Hostname",          style="white", width=18, overflow="fold")
     table.add_column("Vendor",            style="dim",   width=18, overflow="fold")
-    table.add_column("Riesgo",            justify="center")
-    table.add_column("Puertos/Versiones", style="green")
-    table.add_column("Servicios",         style="yellow")
+    table.add_column("Risk",              justify="center")
+    table.add_column("Ports/Versions",    style="green")
+    table.add_column("Services",          style="yellow")
 
     for ip, results in scan_data.items():
         meta     = metadata.get(ip, {})
@@ -97,15 +95,15 @@ def display_results_table(
         vendor   = meta.get("vendor")   or "—"
         risk     = evaluate_risk(results)
 
-        if results == ["Escudo intacto"]:
+        if results == ["Shield intact"]:
             table.add_row(
                 ip, hostname, vendor, risk,
-                "[blue]Cerrado[/blue]", "Dispositivo Protegido",
+                "[blue]Closed[/blue]", "Protected device",
             )
         elif results and "Error" in results[0]:
             table.add_row(
                 ip, hostname, vendor, "[white]???[/white]",
-                "[red]Falla[/red]", "Error de escaneo",
+                "[red]Failed[/red]", "Scan error",
             )
         else:
             ports    = "\n".join(p.split()[0]           for p in results)
@@ -167,7 +165,7 @@ def _run_nmap_sn(args: list[str]) -> tuple[int, str]:
         )
         return proc.returncode, proc.stdout
     except subprocess.TimeoutExpired:
-        rprint("[yellow][-] ping_sweep agotó tiempo (180 s). Red lenta o muy poblada.[/yellow]")
+        rprint("[yellow][-] ping_sweep timed out (180 s). Slow or very crowded network.[/yellow]")
         return 124, ""
     except Exception:
         return 1, ""
@@ -178,8 +176,8 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict]:
     Host discovery on the /24 subnet of *ip_address*.
 
     Primary:  nmap -sn (default probes — ICMP+ARP under root, TCP otherwise).
-    Fallback: nmap -PE -PA80 -PS22,80,443 -sn  (más probes explícitos
-              cuando la red filtra ICMP o ARP no es visible sin root).
+    Fallback: nmap -PE -PA80 -PS22,80,443 -sn  (more explicit probes
+              when the network filters ICMP or ARP isn't visible without root).
 
     Args:
         ip_address : Local IP of this device (e.g. 192.168.1.100).
@@ -195,7 +193,7 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict]:
     hosts = _parse_nmap_sn(out) if rc == 0 else {}
 
     if not hosts:
-        rprint("[dim][-] -sn sin resultados. Probando -PE -PA -PS de respaldo...[/dim]")
+        rprint("[dim][-] -sn returned nothing. Trying -PE -PA -PS fallback...[/dim]")
         rc, out = _run_nmap_sn(
             ["nmap", "-sn", "-PE", "-PA80", "-PS22,80,443", subnet] + exclude_arg
         )
@@ -205,7 +203,7 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict]:
     return hosts
 
 
-_DEEP_SCAN_WORKERS = 8
+_DEEP_SCAN_WORKERS = 16
 
 
 def _scan_one(ip: str) -> tuple[str, list[str]]:
@@ -217,7 +215,7 @@ def _scan_one(ip: str) -> tuple[str, list[str]]:
             stdin=subprocess.DEVNULL,
         )
         ports = re.findall(r"(\d+/tcp\s+open\s+.*)", proc.stdout)
-        return ip, ([p.strip() for p in ports] if ports else ["Escudo intacto"])
+        return ip, ([p.strip() for p in ports] if ports else ["Shield intact"])
     except subprocess.TimeoutExpired:
         return ip, ["Error: timeout"]
     except Exception:
@@ -226,13 +224,13 @@ def _scan_one(ip: str) -> tuple[str, list[str]]:
 
 def deep_scan(live_ips: list[str]) -> dict:
     """
-    Fast port and version scan on each live IP, en paralelo.
+    Fast port and version scan on each live IP, in parallel.
 
     Flags: -F (top 100 ports), -sV (version detection), -T4 (aggressive timing).
-    Hasta 8 hosts en paralelo (I/O-bound: el GIL libera durante subprocess).
+    Up to 8 hosts in parallel (I/O-bound: the GIL is released during subprocess).
 
     Returns:
-        {ip: [open port lines]} or {ip: ["Escudo intacto"]} for closed hosts.
+        {ip: [open port lines]} or {ip: ["Shield intact"]} for closed hosts.
     """
     if not live_ips:
         return {}
@@ -255,7 +253,10 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
     """
     Launch ARP spoofing threads against every IP not in trusted_ips.
 
-    Gateway is inferred as the .1 address of the local subnet.
+    The local host and the default gateway are always protected, even when
+    absent from trusted_ips — cutting them would ARP-poison the operator and
+    knock every device on the LAN off the internet. The gateway is detected
+    from the routing table (not hard-assumed to be .1).
     Each poisoning thread is daemonised and dies when main exits.
 
     Args:
@@ -266,20 +267,25 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
     try:
         from droidnet.modules.spoofer import poison
     except ImportError:
-        rprint("[yellow][-] spoofer no disponible. Saltando corte ARP.[/yellow]")
+        rprint("[yellow][-] spoofer unavailable. Skipping ARP cut.[/yellow]")
         return
 
-    gateway = ".".join(my_ip.split(".")[:-1]) + ".1"
-    trusted = config.get("trusted_ips", [])
-    unknown = [ip for ip in targets if ip not in trusted]
+    gateway = get_default_gateway(my_ip)
+    if not gateway:
+        rprint("[yellow][-] Could not determine the gateway. Skipping ARP cut.[/yellow]")
+        return
+
+    # Always protect the local host and gateway, independent of trusted_ips.
+    protected = set(config.get("trusted_ips", [])) | {my_ip, gateway}
+    unknown = [ip for ip in targets if ip not in protected]
 
     if not unknown:
-        rprint("[dim][-] Sin desconocidos. Red limpia.[/dim]")
+        rprint("[dim][-] No unknown hosts. Network is clean.[/dim]")
         return
 
     iface = get_default_iface()
     for ip in unknown:
-        rprint(f"[bold red][☠][/bold red] Desconocido: [cyan]{ip}[/cyan] — ejecutando corte ARP.")
+        rprint(f"[bold red][☠][/bold red] Unknown: [cyan]{ip}[/cyan] — running ARP cut.")
         t = threading.Thread(target=poison, args=(ip, gateway, iface), daemon=True)
         t.start()
 
@@ -306,7 +312,7 @@ def save_report(ssid: str, scan_data: dict) -> Path:
     filename  = REPORTS_DIR / f"{safe_ssid}_{ts}.json"
 
     # Final guard: ensure resolved path is inside REPORTS_DIR.
-    if not filename.resolve().parent == REPORTS_DIR.resolve():
+    if filename.resolve().parent != REPORTS_DIR.resolve():
         raise ValueError(f"Report path escapes REPORTS_DIR: {filename}")
 
     with filename.open("w") as fh:
@@ -334,11 +340,15 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                       hosts not listed in trusted_ips. Default is False
                       (opt-in) — ARP cutting is destructive.
     """
+    # Ensure the schema exists before any scan writes (idempotent). Done here
+    # rather than at import so merely importing the module never touches the DB.
+    init_db()
+
     last_ssid       = None
     last_scan_time  = datetime.min
     last_purge_time = datetime.min  # daily DB retention sweep
 
-    rprint("[bold yellow][!][/bold yellow] DroidNet Sentinel listo.")
+    rprint("[bold yellow][!][/bold yellow] DroidNet Sentinel ready.")
 
     while True:
         info   = get_wifi_info()
@@ -392,21 +402,21 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                     if auto_cut:
                         cut_unknowns(live_ips, my_ip, config)
                     else:
-                        rprint("[dim][-] auto-cut desactivado. Usa --auto-cut para corte ARP.[/dim]")
+                        rprint("[dim][-] auto-cut disabled. Use --auto-cut for ARP cut.[/dim]")
                 else:
-                    rprint("[yellow][-] Sin hosts detectados en la red.[/yellow]")
-                    log.warning("scan empty network=%s (sin hosts detectados)",
+                    rprint("[yellow][-] No hosts detected on the network.[/yellow]")
+                    log.warning("scan empty network=%s (no hosts detected)",
                                 current_ssid)
 
                 ssid_md = escape_markdown(current_ssid)
                 send_alert(
                     title       = "Sentinel Alert",
-                    local_msg   = f"{len(live_ips)} hosts analizados en {current_ssid}",
+                    local_msg   = f"{len(live_ips)} hosts analysed on {current_ssid}",
                     telegram_msg= (
                         f"🛡️ *DroidNet Sentinel Report*\n\n"
-                        f"📡 *Red:* `{ssid_md}`\n"
-                        f"🎯 *Objetivos vivos:* {len(live_ips)}\n"
-                        f"⚠️ *Revisa el Command Center para detalles.*"
+                        f"📡 *Network:* `{ssid_md}`\n"
+                        f"🎯 *Live targets:* {len(live_ips)}\n"
+                        f"⚠️ *Check the Command Center for details.*"
                     ),
                 )
 

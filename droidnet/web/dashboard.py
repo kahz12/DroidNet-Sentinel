@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from threading import Lock
+from urllib.parse import urlparse
 
 from flask import (
     Flask, render_template_string, jsonify,
@@ -63,6 +64,27 @@ app.config.update(
     SESSION_COOKIE_SAMESITE      = "Lax",
     PERMANENT_SESSION_LIFETIME   = timedelta(hours=8),
 )
+
+# Content-Security-Policy and related hardening headers. The UI ships no
+# JavaScript, so scripts are blocked outright; inline styles are allowed
+# because the templates embed their CSS.
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'none'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy":        "same-origin",
+    "X-Frame-Options":        "DENY",
+}
+
+
+@app.after_request
+def _apply_security_headers(response):
+    for header, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
 
 _USER = os.environ.get("SENTINEL_USER", "admin")
 
@@ -133,16 +155,13 @@ else:
         _GENERATED_PASS = True
         _PASS_PERSISTED = _persist_password(_PASS)
 
-# Initialise DB schema (idempotent — safe to call on every restart).
-init_db()
-
-
 # ══════════════════════════════════════════════════════════════════
 #  Rate limiter for /login (5 attempts / min / IP)
 # ══════════════════════════════════════════════════════════════════
 
 _LOGIN_WINDOW_SEC = 60.0
 _LOGIN_MAX_TRIES  = 5
+_LOGIN_MAX_IPS    = 10_000   # soft cap: beyond this, sweep fully-expired buckets
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _login_lock = Lock()
 
@@ -152,6 +171,20 @@ def _client_ip() -> str:
     return request.remote_addr or "unknown"
 
 
+def _sweep_login_attempts(now: float) -> None:
+    """
+    Drop buckets whose entire window has expired. Caller must hold _login_lock.
+
+    The rate-limit check does not remove emptied buckets, so this keeps the map
+    from growing once per distinct source IP over time.
+    """
+    cutoff = now - _LOGIN_WINDOW_SEC
+    stale = [ip for ip, bucket in _login_attempts.items()
+             if not bucket or bucket[-1] < cutoff]
+    for ip in stale:
+        del _login_attempts[ip]
+
+
 def _login_rate_limited(ip: str) -> bool:
     """
     Returns True if *ip* has exhausted its attempt quota in the window.
@@ -159,6 +192,8 @@ def _login_rate_limited(ip: str) -> bool:
     """
     now = time.monotonic()
     with _login_lock:
+        if len(_login_attempts) > _LOGIN_MAX_IPS:
+            _sweep_login_attempts(now)
         bucket = _login_attempts[ip]
         while bucket and bucket[0] < now - _LOGIN_WINDOW_SEC:
             bucket.popleft()
@@ -166,6 +201,21 @@ def _login_rate_limited(ip: str) -> bool:
             return True
         bucket.append(now)
         return False
+
+
+def _safe_next(value: str) -> str:
+    """
+    Normalise the post-login ``next`` redirect target.
+
+    Only same-site, root-relative paths are returned. Protocol-relative
+    (``//host``) and absolute (``scheme://host``) URLs collapse to ``/``.
+    """
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return value
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -497,10 +547,10 @@ _DASHBOARD_TEMPLATE = """
             border-radius: 50%; margin-right: 6px;
             vertical-align: middle;
         }
-        .legend .dot.r-critico { background: var(--danger); }
-        .legend .dot.r-medio   { background: var(--warn);   }
-        .legend .dot.r-bajo    { background: var(--info);   }
-        .legend .dot.r-minimo  { background: var(--ok);     }
+        .legend .dot.r-critical { background: var(--danger); }
+        .legend .dot.r-medium   { background: var(--warn);   }
+        .legend .dot.r-low    { background: var(--info);   }
+        .legend .dot.r-minimal  { background: var(--ok);     }
         .legend .help-link { margin-left: auto; }
 
         .grid {
@@ -580,16 +630,16 @@ _DASHBOARD_TEMPLATE = """
             padding: 2px 8px; border-radius: 999px;
             text-transform: uppercase;
         }
-        .r-critico { color: var(--danger);
+        .r-critical { color: var(--danger);
                      background: rgba(248,81,73,0.12);
                      border: 1px solid rgba(248,81,73,0.5); }
-        .r-medio   { color: var(--warn);
+        .r-medium   { color: var(--warn);
                      background: rgba(210,153,34,0.12);
                      border: 1px solid rgba(210,153,34,0.5); }
-        .r-bajo    { color: var(--info);
+        .r-low    { color: var(--info);
                      background: rgba(121,192,255,0.12);
                      border: 1px solid rgba(121,192,255,0.5); }
-        .r-minimo  { color: var(--ok);
+        .r-minimal  { color: var(--ok);
                      background: rgba(63,185,80,0.12);
                      border: 1px solid rgba(63,185,80,0.5); }
 
@@ -683,10 +733,10 @@ _DASHBOARD_TEMPLATE = """
         </section>
 
         <div class="legend">
-            <span><span class="dot r-critico"></span>Critical — high-risk service</span>
-            <span><span class="dot r-medio"></span>Medium — exposed service</span>
-            <span><span class="dot r-bajo"></span>Low — open ports, low impact</span>
-            <span><span class="dot r-minimo"></span>Minimal — no open ports</span>
+            <span><span class="dot r-critical"></span>Critical — high-risk service</span>
+            <span><span class="dot r-medium"></span>Medium — exposed service</span>
+            <span><span class="dot r-low"></span>Low — open ports, low impact</span>
+            <span><span class="dot r-minimal"></span>Minimal — no open ports</span>
             <a class="help-link" href="{{ url_for('help_page') }}">What does this mean?</a>
         </div>
 
@@ -712,18 +762,18 @@ _DASHBOARD_TEMPLATE = """
 
                 <div class="scan-body">
                 {% for ip, ports in scan.targets.items() %}
-                    {% set risk    = scan.risks.get(ip, 'MÍNIMO') %}
+                    {% set risk    = scan.risks.get(ip, 'MINIMAL') %}
                     {% set is_new  = ip in scan.new_ips %}
-                    {% set is_vuln = risk in ('CRÍTICO', 'MEDIO', 'BAJO') %}
+                    {% set is_vuln = risk in ('CRITICAL', 'MEDIUM', 'LOW') %}
                     <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% endif %}">
                         <div class="host-head">
                             <span class="ip">{{ ip }}</span>
                             {% if is_new %}<span class="badge badge-new">new</span>{% endif %}
                             <span class="risk
-                                {% if risk == 'CRÍTICO' %}r-critico
-                                {% elif risk == 'MEDIO'  %}r-medio
-                                {% elif risk == 'BAJO'   %}r-bajo
-                                {% else %}r-minimo{% endif %}">{{ risk }}</span>
+                                {% if risk == 'CRITICAL' %}r-critical
+                                {% elif risk == 'MEDIUM'  %}r-medium
+                                {% elif risk == 'LOW'   %}r-low
+                                {% else %}r-minimal{% endif %}">{{ risk }}</span>
                         </div>
 
                         <div class="ports">
@@ -1015,25 +1065,25 @@ _HELP_TEMPLATE = """
                     <table class="risk-table">
                         <tr><th>Label</th><th>Trigger</th><th>What it means</th></tr>
                         <tr>
-                            <td><span class="pill r-critico">CRÍTICO</span></td>
+                            <td><span class="pill r-critical">CRITICAL</span></td>
                             <td>FTP / Telnet / SMB / NetBIOS / RDP</td>
                             <td>High-impact service that should not be
                                 exposed on a typical home network.</td>
                         </tr>
                         <tr>
-                            <td><span class="pill r-medio">MEDIO</span></td>
+                            <td><span class="pill r-medium">MEDIUM</span></td>
                             <td>HTTP / HTTP-alt / DNS / SSDP / NFS</td>
                             <td>Service exposed to the LAN. Often expected,
                                 but worth a banner check.</td>
                         </tr>
                         <tr>
-                            <td><span class="pill r-bajo">BAJO</span></td>
+                            <td><span class="pill r-low">LOW</span></td>
                             <td>Other open ports</td>
                             <td>Open service that did not match the higher
                                 tiers. Worth a banner inspection.</td>
                         </tr>
                         <tr>
-                            <td><span class="pill r-minimo">MÍNIMO</span></td>
+                            <td><span class="pill r-minimal">MINIMAL</span></td>
                             <td>No open ports</td>
                             <td>Host is reachable but exposes no services.</td>
                         </tr>
@@ -1109,7 +1159,7 @@ def _summarize(scans: list[dict]) -> dict:
     for s in scans:
         new_count += len(s.get("new_ips", []))
         risks = s.get("risks", {}) or {}
-        crit_count += sum(1 for r in risks.values() if r == "CRÍTICO")
+        crit_count += sum(1 for r in risks.values() if r == "CRITICAL")
     return {"new_count": new_count, "crit_count": crit_count}
 
 
@@ -1163,9 +1213,7 @@ def login():
             # Rotate CSRF token after login.
             session["_csrf_token"]   = secrets.token_urlsafe(32)
             log.info("login ok user=%s ip=%s", username, ip)
-            # Guard against open-redirect: only allow relative paths.
-            safe_next = next_url if next_url.startswith("/") else "/"
-            return redirect(safe_next)
+            return redirect(_safe_next(next_url))
         log.warning("login fail user=%s ip=%s", username, ip)
         error = "Invalid credentials. Try again."
 
@@ -1251,6 +1299,9 @@ def api_scan_diff(scan_id: int):
 
 def _print_startup_banner(host: str = "127.0.0.1", port: int = 5000) -> None:
     """Print server info, bind hint and credential warnings at startup."""
+    # Ensure the schema exists before serving (idempotent). Done here, the
+    # shared pre-serve hook, so importing the module never touches the DB.
+    init_db()
     print("[*] Starting Command Center with authentication...")
     bind_label = "LAN (0.0.0.0)" if host == "0.0.0.0" else "loopback (127.0.0.1)"
     print(f"[+] Bind: {bind_label} port {port}")

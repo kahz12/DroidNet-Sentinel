@@ -85,15 +85,112 @@ def test_purge_deletes_old_scans(tmp_path: Path, monkeypatch):
     assert [r[0] for r in rows] == ["new"]
 
 
-def test_purge_rejects_zero_or_negative():
+def test_purge_zero_or_negative_is_optout():
+    # Non-positive retention is an opt-out: returns 0 without deleting.
     from droidnet.core.database import purge_old_scans
-    with pytest.raises(ValueError):
-        purge_old_scans(0)
-    with pytest.raises(ValueError):
-        purge_old_scans(-5)
+    assert purge_old_scans(0) == 0
+    assert purge_old_scans(-5) == 0
 
 
-# ── _has_open_ports (bug 3 fix) ──────────────────────────────────
+# ── cve_alerts dedup includes network ────────────────────────────
+
+def test_cve_alert_dedup_includes_network(tmp_path: Path, monkeypatch):
+    """Same CVE/ip/service under different SSIDs must both register; an exact
+    repeat on the same network is deduped."""
+    db = tmp_path / "cve.db"
+    monkeypatch.setattr("droidnet.core.database.DB_PATH", db)
+    from droidnet.core import database as dbmod
+    dbmod.init_db()
+
+    common = dict(cve_id="CVE-2024-0001", severity="HIGH", score=7.5,
+                  service="http", ip="192.168.1.10", summary="x", impact=None)
+
+    id_home   = dbmod.save_cve_alert(network="home",   **common)
+    id_office = dbmod.save_cve_alert(network="office", **common)
+    id_dup    = dbmod.save_cve_alert(network="home",   **common)  # exact repeat
+
+    assert id_home is not None
+    assert id_office is not None      # different network → new alert
+    assert id_dup is None             # same network → deduped
+
+
+# ── legacy Spanish → English data migration (init_db) ─────────────
+
+def test_init_db_migrates_legacy_spanish_values(tmp_path: Path, monkeypatch):
+    """An older DB holding Spanish risk labels / markers is rewritten to
+    English on the next init_db() call."""
+    db = tmp_path / "legacy.db"
+    monkeypatch.setattr("droidnet.core.database.DB_PATH", db)
+    from droidnet.core import database as dbmod
+    dbmod.init_db()
+
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO scans (id, network, scan_time) VALUES (1, 'n', 't')")
+    conn.execute("INSERT INTO hosts (scan_id, ip, risk) VALUES (1, '10.0.0.5', 'CRÍTICO')")
+    conn.execute("INSERT INTO hosts (scan_id, ip, risk) VALUES (1, '10.0.0.6', 'MÍNIMO')")
+    host_id = conn.execute("SELECT id FROM hosts WHERE ip = '10.0.0.6'").fetchone()[0]
+    conn.execute("INSERT INTO ports (host_id, port_entry) VALUES (?, 'Escudo intacto')", (host_id,))
+    conn.commit()
+    conn.close()
+
+    dbmod.init_db()  # idempotent re-init triggers the migration
+
+    conn = sqlite3.connect(db)
+    risks = {r[0] for r in conn.execute("SELECT risk FROM hosts").fetchall()}
+    ports = {r[0] for r in conn.execute("SELECT port_entry FROM ports").fetchall()}
+    conn.close()
+    assert risks == {"CRITICAL", "MINIMAL"}
+    assert ports == {"Shield intact"}
+
+
+# ── cve_alerts UNIQUE key schema migration (init_db) ──────────────
+
+def test_init_db_migrates_cve_alerts_unique_key(tmp_path: Path, monkeypatch):
+    """An older cve_alerts keyed on (cve_id, ip, service) is rebuilt to include
+    `network`, preserving existing rows."""
+    db = tmp_path / "legacy_cve.db"
+    monkeypatch.setattr("droidnet.core.database.DB_PATH", db)
+    from droidnet.core import database as dbmod
+    dbmod.init_db()
+
+    # Recreate cve_alerts with the pre-network UNIQUE key and seed one row.
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        DROP TABLE cve_alerts;
+        CREATE TABLE cve_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'UNKNOWN',
+            score REAL, service TEXT NOT NULL, ip TEXT NOT NULL,
+            summary TEXT NOT NULL, impact TEXT, network TEXT NOT NULL,
+            scan_id INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(cve_id, ip, service)
+        );
+        INSERT INTO cve_alerts (cve_id, severity, score, service, ip, summary, impact, network)
+            VALUES ('CVE-2024-1', 'HIGH', 7.5, 'http', '10.0.0.9', 's', NULL, 'home');
+    """)
+    conn.commit()
+    conn.close()
+
+    dbmod.init_db()  # triggers the cve_alerts rebuild
+
+    # The seeded row survives the rebuild.
+    rows = dbmod.get_cve_alerts()
+    assert any(r["cve_id"] == "CVE-2024-1" and r["network"] == "home" for r in rows)
+
+    # The same CVE/ip/service now registers under a different network.
+    new_id = dbmod.save_cve_alert(cve_id="CVE-2024-1", severity="HIGH", score=7.5,
+                                  service="http", ip="10.0.0.9", summary="s",
+                                  impact=None, network="office")
+    assert new_id is not None
+
+    conn = sqlite3.connect(db)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'cve_alerts'").fetchone()[0]
+    conn.close()
+    assert "service, network)" in sql
+
+
+# ── _has_open_ports ──────────────────────────────────────────────
 
 def test_has_open_ports_real_tcp():
     assert _has_open_ports(["80/tcp open http"]) is True
@@ -110,7 +207,7 @@ def test_has_open_ports_real_udp():
 
 
 def test_has_open_ports_closed_marker():
-    assert _has_open_ports(["Escudo intacto"]) is False
+    assert _has_open_ports(["Shield intact"]) is False
 
 
 def test_has_open_ports_error_marker():
@@ -146,7 +243,7 @@ def test_has_open_ports_rejects_filtered_state():
     assert _has_open_ports(["80/tcp closed http"]) is False
 
 
-# ── get_latest_scan_with_services (integration with bug 3 fix) ───
+# ── get_latest_scan_with_services (integration) ──────────────────
 
 def test_get_latest_skips_error_only_scans(tmp_path: Path, monkeypatch):
     """A scan whose only host has ['Error'] must not be returned."""
@@ -159,7 +256,7 @@ def test_get_latest_skips_error_only_scans(tmp_path: Path, monkeypatch):
     # Scan A: only errors → skip.
     dbmod.save_scan("net-A", "20260101_000000", {"10.0.0.1": ["Error"]})
     # Scan B: only closed → skip.
-    dbmod.save_scan("net-B", "20260101_000100", {"10.0.0.2": ["Escudo intacto"]})
+    dbmod.save_scan("net-B", "20260101_000100", {"10.0.0.2": ["Shield intact"]})
     # Scan C: real services → return.
     dbmod.save_scan("net-C", "20260101_000200",
                     {"10.0.0.3": ["22/tcp open ssh OpenSSH"]})
@@ -178,6 +275,6 @@ def test_get_latest_returns_none_when_all_scans_marker_only(tmp_path: Path, monk
     dbmod.init_db()
 
     dbmod.save_scan("net-A", "20260101_000000", {"10.0.0.1": ["Error: timeout"]})
-    dbmod.save_scan("net-B", "20260101_000100", {"10.0.0.2": ["Escudo intacto"]})
+    dbmod.save_scan("net-B", "20260101_000100", {"10.0.0.2": ["Shield intact"]})
 
     assert dbmod.get_latest_scan_with_services() is None

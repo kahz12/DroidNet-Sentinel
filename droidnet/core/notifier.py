@@ -67,7 +67,7 @@ def send_telegram(message: str) -> None:
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as exc:
-        rprint(f"[dim][-] Fallo en enlace Telegram: {exc}[/dim]")
+        rprint(f"[dim][-] Telegram delivery failed: {exc}[/dim]")
 
 
 def send_alert(title: str, local_msg: str, telegram_msg: str) -> None:

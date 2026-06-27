@@ -38,8 +38,14 @@ def test_validate_replaces_wrong_type_with_default():
     assert out["db_retention_days"] == 90
 
 
+def test_validate_drops_invalid_ip_entries():
+    raw = {"trusted_ips": ["192.168.1.1", "not-an-ip", "10.0.0.0/24", "999.1.1.1"]}
+    out = _validate_config(raw)
+    assert out["trusted_ips"] == ["192.168.1.1", "10.0.0.0/24"]
+
+
 def test_validate_rejects_bool_for_int_field():
-    # bool is a subclass of int in Python — easy footgun, must be rejected.
+    # bool is a subclass of int in Python, so it must be rejected explicitly.
     raw = {"db_retention_days": True}
     out = _validate_config(raw)
     assert out["db_retention_days"] == 90
@@ -83,3 +89,29 @@ def test_load_returns_defaults_on_corrupt_json(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG_FILE", p)
     out = cfg.load_user_config()
     assert out["excluded_ips"] == []
+
+
+# ── default lists must not be shared across calls ───────────────────
+
+def test_validate_returns_independent_default_lists():
+    a = _validate_config({})
+    b = _validate_config({})
+    a["excluded_ips"].append("1.2.3.4")
+    # Mutating one call's default must not affect another's.
+    assert b["excluded_ips"] == []
+    assert a["trusted_ips"] is not b["trusted_ips"]
+
+
+def test_validate_non_dict_returns_independent_default_lists():
+    a = _validate_config(["not", "a", "dict"])  # type: ignore[arg-type]
+    b = _validate_config(["not", "a", "dict"])  # type: ignore[arg-type]
+    a["excluded_ips"].append("x")
+    assert b["excluded_ips"] == []
+
+
+def test_load_returns_independent_default_lists(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "absent.json")
+    a = cfg.load_user_config()
+    b = cfg.load_user_config()
+    a["trusted_ips"].append("10.0.0.1")
+    assert b["trusted_ips"] == []
