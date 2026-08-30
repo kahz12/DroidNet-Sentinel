@@ -14,7 +14,8 @@ import re
 import requests
 from rich import print as rprint
 
-from droidnet.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from droidnet.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, telegram_configured
+from droidnet.core.logger import get_logger
 from droidnet.platform.utils import send_notification as _send_local
 
 
@@ -23,6 +24,8 @@ from droidnet.platform.utils import send_notification as _send_local
 # An attacker-controlled SSID like "My_Cafe*" would either break the
 # message ("entity at byte X") or inject formatting. Apply this escape
 # at the boundary to any value that originates from user/network input.
+log = get_logger(__name__)
+
 _TG_MD_SPECIAL = re.compile(r"([_*`\[\]])")
 
 
@@ -50,12 +53,7 @@ def send_telegram(message: str) -> None:
     No-op when TELEGRAM_TOKEN is the placeholder string.
     Fails silently on network errors to avoid blocking the scan loop.
     """
-    if (
-        not TELEGRAM_TOKEN
-        or not TELEGRAM_CHAT_ID
-        or TELEGRAM_TOKEN == "TOKEN_DE_BOTFATHER"
-        or TELEGRAM_CHAT_ID == "ID_NUMERICO"
-    ):
+    if not telegram_configured():
         return
 
     url     = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -68,6 +66,7 @@ def send_telegram(message: str) -> None:
         requests.post(url, json=payload, timeout=5)
     except Exception as exc:
         rprint(f"[dim][-] Telegram delivery failed: {exc}[/dim]")
+        log.warning("telegram delivery failed: %s", exc)
 
 
 def send_alert(title: str, local_msg: str, telegram_msg: str) -> None:

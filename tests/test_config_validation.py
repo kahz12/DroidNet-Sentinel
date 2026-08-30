@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
 
 import droidnet.config as cfg
 from droidnet.config import _validate_config

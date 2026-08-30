@@ -25,9 +25,11 @@ import subprocess
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from rich import print as rprint
 
+from droidnet.core.logger import get_logger
 from droidnet.platform.utils import check_root
 
 # Non-overlapping 2.4 GHz channels (the most used). For a full hop
@@ -42,7 +44,12 @@ try:
 except ImportError:
     _SCAPY_OK = False
 
+if TYPE_CHECKING:
+    from scapy.packet import Packet
+
 BROADCAST = "ff:ff:ff:ff:ff:ff"
+
+log = get_logger(__name__)
 
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
@@ -158,7 +165,7 @@ class _ChannelHopper:
             self._stop.wait(self.interval)
 
 
-def _build_deauth(target_mac: str, bssid: str, reason: int = 7):
+def _build_deauth(target_mac: str, bssid: str, reason: int = 7) -> "Packet":
     """
     Build the 802.11 Deauth Scapy frame.
 
@@ -249,11 +256,12 @@ def deauth_target(
     frame          = _build_deauth(target_mac, bssid)
     target_display = "BROADCAST (all)" if target_mac == BROADCAST else target_mac
 
-    rprint(f"\n[bold red][☠][/bold red] Deauth started")
+    log.info("deauth started target=%s bssid=%s iface=%s", target_display, bssid, iface)
+    rprint("\n[bold red][☠][/bold red] Deauth started")
     rprint(f"  Target    : [cyan]{target_display}[/cyan]")
     rprint(f"  AP (BSSID): [cyan]{bssid}[/cyan]")
     rprint(f"  Interface : [cyan]{iface}[/cyan]")
-    rprint(f"  Ctrl+C to stop.\n")
+    rprint("  Ctrl+C to stop.\n")
 
     sent = 0
     try:

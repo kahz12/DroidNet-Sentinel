@@ -15,10 +15,7 @@ Usage (non-interactive / scripted):
     python main.py --deauth broadcast AA:BB:CC:DD:EE:FF wlan0mon
 """
 
-from droidnet.cli import print_banner, parse_args, handle_args, interactive_menu
+from droidnet.cli import main
 
 if __name__ == "__main__":
-    print_banner()
-    args = parse_args()
-    if not handle_args(args):
-        interactive_menu()
+    main()

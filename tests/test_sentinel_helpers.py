@@ -46,6 +46,17 @@ def test_gateway_parses_via_from_route(monkeypatch):
     assert get_default_gateway("192.168.7.42") == "10.0.0.254"
 
 
+def test_gateway_prefers_lan_route_over_cellular(monkeypatch):
+    # Two default routes active (cellular first, Wi-Fi second). The gateway on
+    # the scanned /24 must win so the ARP cut targets the real LAN gateway.
+    routes = (
+        "default via 10.20.30.1 dev rmnet0 metric 100\n"
+        "default via 192.168.7.1 dev wlan0 metric 600\n"
+    )
+    monkeypatch.setattr(utils.subprocess, "run", lambda *a, **k: _FakeProc(routes))
+    assert get_default_gateway("192.168.7.42") == "192.168.7.1"
+
+
 def test_gateway_falls_back_to_dot_one(monkeypatch):
     # No usable route output → conventional .1 host of the local /24.
     monkeypatch.setattr(utils.subprocess, "run", lambda *a, **k: _FakeProc(""))
@@ -82,6 +93,23 @@ def test_cut_unknowns_protects_self_gateway_and_trusted(monkeypatch):
 
     # gateway (.1), self (.10) and trusted (.50) are spared; only .99 is cut.
     assert cut == ["192.168.1.99"]
+
+
+def test_cut_unknowns_caps_simultaneous_cuts(monkeypatch):
+    import droidnet.modules.spoofer as spoofer
+
+    cut: list[str] = []
+    monkeypatch.setattr(spoofer, "poison", lambda ip, gw, iface: cut.append(ip))
+    monkeypatch.setattr(sentinel, "get_default_gateway", lambda my_ip: "192.168.1.1")
+    monkeypatch.setattr(sentinel, "get_default_iface", lambda: "wlan0")
+    monkeypatch.setattr(sentinel.threading, "Thread", _SyncThread)
+
+    # More unknown hosts than the cap: only _MAX_ARP_CUTS get cut, in order.
+    targets = [f"192.168.1.{i}" for i in range(2, 2 + sentinel._MAX_ARP_CUTS + 20)]
+    sentinel.cut_unknowns(targets, my_ip="192.168.1.250", config={"trusted_ips": []})
+
+    assert len(cut) == sentinel._MAX_ARP_CUTS
+    assert cut == targets[:sentinel._MAX_ARP_CUTS]
 
 
 def test_cut_unknowns_aborts_when_gateway_unknown(monkeypatch):

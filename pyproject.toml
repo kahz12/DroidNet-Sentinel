@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "droidnet-sentinel"
+description = "Network security toolkit for Termux/Linux: scanning, CVE watch, ARP/deauth tooling and a web dashboard."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Ale" }]
+requires-python = ">=3.10"
+dynamic = ["version"]
+keywords = ["security", "network", "scanner", "cve", "termux", "nmap"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Security",
+]
+dependencies = [
+    "requests>=2.31,<3",
+    "rich>=13.7,<14",
+    "flask>=3.0,<4",
+    "scapy>=2.5,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+# Multi-worker deployments: shared-backend rate-limiting + CSRF. The built-in
+# in-memory limiter/CSRF only hold within a single process (see dashboard.py).
+server = [
+    "flask-limiter>=3.5,<4",
+    "flask-wtf>=1.2,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/kahz12/DroidNet-Sentinel"
+
+[project.scripts]
+droidnet = "droidnet.cli:main"
+
+[tool.setuptools]
+packages = [
+    "droidnet",
+    "droidnet.cli",
+    "droidnet.core",
+    "droidnet.modules",
+    "droidnet.platform",
+    "droidnet.web",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "droidnet.__version__" }
+
+[tool.setuptools.package-data]
+"droidnet.web" = ["templates/*.html"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

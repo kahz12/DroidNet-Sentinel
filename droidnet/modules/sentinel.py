@@ -204,6 +204,7 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict]:
 
 
 _DEEP_SCAN_WORKERS = 16
+_MAX_ARP_CUTS = 32  # cap on simultaneous ARP-cut threads
 
 
 def _scan_one(ip: str) -> tuple[str, list[str]]:
@@ -268,11 +269,13 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
         from droidnet.modules.spoofer import poison
     except ImportError:
         rprint("[yellow][-] spoofer unavailable. Skipping ARP cut.[/yellow]")
+        log.warning("arp cut skipped: spoofer unavailable")
         return
 
     gateway = get_default_gateway(my_ip)
     if not gateway:
         rprint("[yellow][-] Could not determine the gateway. Skipping ARP cut.[/yellow]")
+        log.warning("arp cut skipped: gateway undetermined my_ip=%s", my_ip)
         return
 
     # Always protect the local host and gateway, independent of trusted_ips.
@@ -281,11 +284,23 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
 
     if not unknown:
         rprint("[dim][-] No unknown hosts. Network is clean.[/dim]")
+        log.info("arp cut: no unknown hosts network is clean")
         return
 
+    # poison() blocks until Ctrl+C, so each cut needs its own daemon thread
+    # (a bounded pool would queue the overflow forever). Cap the count instead
+    # to avoid exhausting resources on a large or hostile network.
+    if len(unknown) > _MAX_ARP_CUTS:
+        rprint(f"[yellow][!] {len(unknown)} unknown hosts exceed the "
+               f"{_MAX_ARP_CUTS}-cut cap; cutting the first {_MAX_ARP_CUTS}.[/yellow]")
+        log.warning("arp cut capped unknown=%d cap=%d", len(unknown), _MAX_ARP_CUTS)
+        unknown = unknown[:_MAX_ARP_CUTS]
+
     iface = get_default_iface()
+    log.info("arp cut launching count=%d gateway=%s iface=%s", len(unknown), gateway, iface)
     for ip in unknown:
         rprint(f"[bold red][☠][/bold red] Unknown: [cyan]{ip}[/cyan] — running ARP cut.")
+        log.info("arp cut target=%s gateway=%s iface=%s", ip, gateway, iface)
         t = threading.Thread(target=poison, args=(ip, gateway, iface), daemon=True)
         t.start()
 

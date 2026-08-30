@@ -26,7 +26,6 @@ The file handler always logs at DEBUG to keep a complete trail.
 
 import logging
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 from droidnet.config import BASE_DIR
 

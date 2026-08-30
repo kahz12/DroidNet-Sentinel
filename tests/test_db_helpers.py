@@ -3,7 +3,6 @@
 import sqlite3
 from pathlib import Path
 
-import pytest
 
 from droidnet.core.database import _compute_diff, _has_open_ports
 

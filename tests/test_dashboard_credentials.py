@@ -1,7 +1,6 @@
 """Unit tests for dashboard credentials persistence (~/.sentinel/credentials)."""
 
 import os
-import stat
 from pathlib import Path
 
 import pytest

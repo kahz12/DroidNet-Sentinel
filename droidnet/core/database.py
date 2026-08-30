@@ -13,11 +13,11 @@ Public API:
     get_all_scans()             → all scans + targets, newest first
     get_all_scans_with_diffs()  → same, plus diff vs previous scan
     get_scan_diff(scan_id)      → single scan + diff data
-    get_known_ips(network)      → all IPs ever seen on a network
 """
 
 import re
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
@@ -40,7 +40,7 @@ def _has_open_ports(ports: list[str]) -> bool:
 # ══════════════════════════════════════════════════════════════════
 
 @contextmanager
-def _conn():
+def _conn() -> Iterator[sqlite3.Connection]:
     """Yield a connected, row-factory-enabled SQLite connection."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -353,17 +353,6 @@ def get_scan_diff(scan_id: int) -> dict:
 
     return d
 
-
-def get_known_ips(network: str) -> set[str]:
-    """Return every IP ever seen on *network* across all historical scans."""
-    with _conn() as c:
-        rows = c.execute("""
-            SELECT DISTINCT h.ip
-              FROM hosts h
-              JOIN scans s ON s.id = h.scan_id
-             WHERE s.network = ?
-        """, (network,)).fetchall()
-    return {r["ip"] for r in rows}
 
 
 # ══════════════════════════════════════════════════════════════════

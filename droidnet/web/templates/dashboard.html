@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel · Dashboard</title>
+    <style>
+
+{% include "_base_css.html" %}
+
+        .summary {
+            display: grid; gap: 14px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            margin-bottom: 22px;
+        }
+        .stat {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+        }
+        .stat .label {
+            color: var(--text-mut); font-size: 0.75rem;
+            letter-spacing: 0.7px; text-transform: uppercase;
+        }
+        .stat .value {
+            margin-top: 4px;
+            font-size: 1.5rem; font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        .stat.ok    .value { color: var(--ok);     }
+        .stat.warn  .value { color: var(--warn);   }
+        .stat.bad   .value { color: var(--danger); }
+        .stat.info  .value { color: var(--info);   }
+
+        .legend {
+            display: flex; flex-wrap: wrap; gap: 14px;
+            background: var(--bg-soft);
+            border: 1px dashed var(--border);
+            color: var(--text-mut);
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 0.82rem;
+            margin-bottom: 22px;
+        }
+        .legend .dot {
+            display: inline-block; width: 10px; height: 10px;
+            border-radius: 50%; margin-right: 6px;
+            vertical-align: middle;
+        }
+        .legend .dot.r-critical { background: var(--danger); }
+        .legend .dot.r-medium   { background: var(--warn);   }
+        .legend .dot.r-low    { background: var(--info);   }
+        .legend .dot.r-minimal  { background: var(--ok);     }
+        .legend .help-link { margin-left: auto; }
+
+        .grid {
+            display: grid; gap: 18px;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        }
+
+        .scan {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            display: flex; flex-direction: column;
+            overflow: hidden;
+        }
+        .scan-head {
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid var(--border-mut);
+        }
+        .scan-net {
+            display: flex; align-items: baseline; gap: 8px;
+            font-weight: 700; font-size: 1rem;
+        }
+        .scan-net .label { color: var(--text-mut); font-weight: 500;
+                           font-size: 0.78rem; text-transform: uppercase;
+                           letter-spacing: 0.7px; }
+        .scan-meta {
+            color: var(--text-mut); font-size: 0.82rem;
+            margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap;
+        }
+        .scan-meta .pill {
+            display: inline-flex; align-items: center;
+            background: var(--bg-elev);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 2px 9px; font-size: 0.74rem;
+        }
+        .scan-meta .pill.new  { color: var(--warn);
+                                border-color: rgba(210,153,34,0.5); }
+        .scan-meta .pill.gone { color: var(--danger);
+                                border-color: rgba(248,81,73,0.5); }
+
+        .scan-body { padding: 6px 16px 16px; }
+
+        .host {
+            background: var(--bg-deep);
+            border-left: 3px solid var(--ok);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            padding: 10px 12px;
+            margin-top: 10px;
+        }
+        .host.vuln { border-left-color: var(--danger); }
+        .host.new  { border-left-color: var(--warn);   }
+
+        .host-head {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .ip {
+            font-family: var(--font-mono);
+            font-weight: 700;
+            color: var(--info);
+        }
+        .badge {
+            display: inline-block; font-size: 0.68rem;
+            font-weight: 600; letter-spacing: 0.5px;
+            padding: 2px 8px; border-radius: 999px;
+            text-transform: uppercase;
+        }
+        .badge-new {
+            color: var(--warn);
+            background: rgba(210,153,34,0.12);
+            border: 1px solid rgba(210,153,34,0.5);
+        }
+        .risk {
+            font-size: 0.72rem; font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 2px 8px; border-radius: 999px;
+            text-transform: uppercase;
+        }
+        .r-critical { color: var(--danger);
+                     background: rgba(248,81,73,0.12);
+                     border: 1px solid rgba(248,81,73,0.5); }
+        .r-medium   { color: var(--warn);
+                     background: rgba(210,153,34,0.12);
+                     border: 1px solid rgba(210,153,34,0.5); }
+        .r-low    { color: var(--info);
+                     background: rgba(121,192,255,0.12);
+                     border: 1px solid rgba(121,192,255,0.5); }
+        .r-minimal  { color: var(--ok);
+                     background: rgba(63,185,80,0.12);
+                     border: 1px solid rgba(63,185,80,0.5); }
+
+        .ports { margin-top: 8px; font-family: var(--font-mono);
+                 font-size: 0.82rem; color: var(--text-mut); }
+        .ports .ok-line  { color: var(--ok);  display: block; }
+        .ports .bad-line { color: #ff7b72;    display: block; }
+
+        .diff-box {
+            margin-top: 10px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border-mut);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-size: 0.78rem;
+            font-family: var(--font-mono);
+        }
+        .diff-box .diff-label {
+            color: var(--text-mut); margin-bottom: 4px;
+            font-family: var(--font-sans); font-size: 0.72rem;
+            text-transform: uppercase; letter-spacing: 0.6px;
+        }
+        .added   { color: var(--ok);     display: block; }
+        .removed { color: var(--danger); display: block; }
+
+        .gone-list {
+            margin-top: 14px;
+            font-size: 0.78rem; color: var(--text-mut);
+            border-top: 1px dashed var(--border-mut);
+            padding-top: 10px;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-mut);
+        }
+        .empty .big { font-size: 2rem; margin-bottom: 10px; }
+        .empty a {
+            display: inline-block; margin-top: 14px;
+            background: var(--bg-elev); border: 1px solid var(--border);
+            color: var(--text); padding: 8px 14px;
+            border-radius: var(--radius-sm);
+        }
+
+        .pager {
+            display: flex; justify-content: center; align-items: center;
+            gap: 14px; margin-top: 28px;
+            color: var(--text-mut); font-size: 0.9rem;
+        }
+        .pager a, .pager span.disabled {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 7px 12px; border-radius: var(--radius-sm);
+        }
+        .pager span.disabled { color: var(--text-dim); cursor: not-allowed; }
+        .pager a:hover { background: var(--bg-elev); }
+    </style>
+</head>
+<body>
+    <nav class="topbar">
+        <div class="brand">
+            <span class="logo">S</span>
+            <span class="name">Sentinel</span>
+            <span class="ver">Command Center</span>
+        </div>
+        <div class="nav">
+            <a class="active" href="{{ url_for('index') }}">Dashboard</a>
+            <a href="{{ url_for('help_page') }}">Help</a>
+            <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="page-header">
+            <h1>Network audit history</h1>
+            <p>Recent scans, diffs and risk assessment for every host on the
+               networks you have audited.</p>
+        </div>
+
+        <section class="summary">
+            <div class="stat info"><div class="label">Total scans</div>
+                 <div class="value">{{ total }}</div></div>
+            <div class="stat warn"><div class="label">New hosts (page)</div>
+                 <div class="value">{{ stats.new_count }}</div></div>
+            <div class="stat bad"><div class="label">Critical hosts (page)</div>
+                 <div class="value">{{ stats.crit_count }}</div></div>
+            <div class="stat ok"><div class="label">Page</div>
+                 <div class="value">{{ page }} / {{ total_pages }}</div></div>
+        </section>
+
+        <div class="legend">
+            <span><span class="dot r-critical"></span>Critical — high-risk service</span>
+            <span><span class="dot r-medium"></span>Medium — exposed service</span>
+            <span><span class="dot r-low"></span>Low — open ports, low impact</span>
+            <span><span class="dot r-minimal"></span>Minimal — no open ports</span>
+            <a class="help-link" href="{{ url_for('help_page') }}">What does this mean?</a>
+        </div>
+
+        <div class="grid">
+        {% for scan in scans %}
+            <article class="scan">
+                <header class="scan-head">
+                    <div class="scan-net">
+                        <span class="label">Network</span>
+                        <span>{{ scan.network }}</span>
+                    </div>
+                    <div class="scan-meta">
+                        <span>{{ scan.scan_time }}</span>
+                        <span class="pill">{{ scan.total_devices }} devices</span>
+                        {% if scan.new_ips %}
+                            <span class="pill new">+{{ scan.new_ips|length }} new</span>
+                        {% endif %}
+                        {% if scan.gone_ips %}
+                            <span class="pill gone">-{{ scan.gone_ips|length }} gone</span>
+                        {% endif %}
+                    </div>
+                </header>
+
+                <div class="scan-body">
+                {% for ip, ports in scan.targets.items() %}
+                    {% set risk    = scan.risks.get(ip, 'MINIMAL') %}
+                    {% set is_new  = ip in scan.new_ips %}
+                    {% set is_vuln = risk in ('CRITICAL', 'MEDIUM', 'LOW') %}
+                    <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% endif %}">
+                        <div class="host-head">
+                            <span class="ip">{{ ip }}</span>
+                            {% if is_new %}<span class="badge badge-new">new</span>{% endif %}
+                            <span class="risk
+                                {% if risk == 'CRITICAL' %}r-critical
+                                {% elif risk == 'MEDIUM'  %}r-medium
+                                {% elif risk == 'LOW'   %}r-low
+                                {% else %}r-minimal{% endif %}">{{ risk }}</span>
+                        </div>
+
+                        <div class="ports">
+                        {% for port in ports %}
+                            {% if is_vuln %}
+                                <span class="bad-line">! {{ port }}</span>
+                            {% else %}
+                                <span class="ok-line">+ {{ port }}</span>
+                            {% endif %}
+                        {% endfor %}
+                        </div>
+
+                        {% if ip in scan.port_changes %}
+                        <div class="diff-box">
+                            <div class="diff-label">Port changes since last scan</div>
+                            {% for p in scan.port_changes[ip].added %}
+                                <span class="added">+ {{ p }}</span>
+                            {% endfor %}
+                            {% for p in scan.port_changes[ip].removed %}
+                                <span class="removed">- {{ p }}</span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+
+                {% if scan.gone_ips %}
+                <div class="gone-list">
+                    Disappeared since last scan: {{ scan.gone_ips | join(', ') }}
+                </div>
+                {% endif %}
+                </div>
+            </article>
+        {% else %}
+            <div class="empty">
+                <div class="big">No scans yet</div>
+                <p>The database is empty. Run a Sentinel scan to populate it.</p>
+                <a href="{{ url_for('help_page') }}">Open the user guide</a>
+            </div>
+        {% endfor %}
+        </div>
+
+        {% if total_pages > 1 %}
+        <nav class="pager">
+            {% if has_prev %}
+                <a href="{{ url_for('index', page=page-1, per_page=per_page) }}">← Previous</a>
+            {% else %}
+                <span class="disabled">← Previous</span>
+            {% endif %}
+            <span>Page {{ page }} of {{ total_pages }} · {{ total }} scans</span>
+            {% if has_next %}
+                <a href="{{ url_for('index', page=page+1, per_page=per_page) }}">Next →</a>
+            {% else %}
+                <span class="disabled">Next →</span>
+            {% endif %}
+        </nav>
+        {% endif %}
+    </main>
+</body>
+</html>

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel · Help</title>
+    <style>
+
+{% include "_base_css.html" %}
+
+        .layout {
+            display: grid;
+            grid-template-columns: 240px 1fr;
+            gap: 28px;
+        }
+        @media (max-width: 800px) {
+            .layout { grid-template-columns: 1fr; }
+        }
+        .toc {
+            position: sticky; top: 80px;
+            align-self: start;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px;
+            font-size: 0.88rem;
+        }
+        .toc h3 {
+            font-size: 0.72rem; letter-spacing: 0.7px;
+            text-transform: uppercase;
+            color: var(--text-mut); margin-bottom: 8px;
+        }
+        .toc a {
+            display: block;
+            color: var(--text-mut);
+            padding: 6px 8px;
+            border-radius: var(--radius-sm);
+        }
+        .toc a:hover { background: var(--bg-elev); color: var(--text); }
+
+        .doc section {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 22px 24px;
+            margin-bottom: 18px;
+            scroll-margin-top: 80px;
+        }
+        .doc h2 { font-size: 1.15rem; margin-bottom: 10px; }
+        .doc h3 { font-size: 0.95rem; margin: 16px 0 6px; color: var(--text); }
+        .doc p, .doc li { color: var(--text-mut); margin-bottom: 8px; }
+        .doc ul { padding-left: 22px; }
+        .doc strong { color: var(--text); }
+        .doc code {
+            font-family: var(--font-mono);
+            background: var(--bg-deep);
+            border: 1px solid var(--border-mut);
+            color: var(--accent-2);
+            padding: 1px 6px; border-radius: 4px;
+            font-size: 0.86em;
+        }
+        .doc .kbd {
+            font-family: var(--font-mono);
+            background: var(--bg-elev);
+            border: 1px solid var(--border);
+            border-bottom-width: 2px;
+            color: var(--text);
+            padding: 1px 6px; border-radius: 5px;
+            font-size: 0.82em;
+        }
+        .risk-table {
+            width: 100%; border-collapse: collapse; margin-top: 10px;
+            font-size: 0.88rem;
+        }
+        .risk-table th, .risk-table td {
+            text-align: left; padding: 8px 10px;
+            border-bottom: 1px solid var(--border-mut);
+        }
+        .risk-table th { color: var(--text-mut); font-weight: 600;
+                         font-size: 0.78rem; text-transform: uppercase;
+                         letter-spacing: 0.6px; }
+        .risk-table td { color: var(--text); }
+        .risk-table .pill {
+            display: inline-block; padding: 2px 8px;
+            border-radius: 999px; font-size: 0.72rem;
+            font-weight: 700; letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .feat-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px; margin-top: 8px;
+        }
+        .feat {
+            background: var(--bg-soft);
+            border: 1px solid var(--border-mut);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+        }
+        .feat h4 { color: var(--text); font-size: 0.95rem;
+                   margin-bottom: 4px; }
+        .feat p  { color: var(--text-mut); font-size: 0.85rem; margin: 0; }
+    </style>
+</head>
+<body>
+    <nav class="topbar">
+        <div class="brand">
+            <span class="logo">S</span>
+            <span class="name">Sentinel</span>
+            <span class="ver">Command Center</span>
+        </div>
+        <div class="nav">
+            <a href="{{ url_for('index') }}">Dashboard</a>
+            <a class="active" href="{{ url_for('help_page') }}">Help</a>
+            <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="page-header">
+            <h1>User guide</h1>
+            <p>How Sentinel works, how to read this dashboard, and how to use
+               every feature responsibly.</p>
+        </div>
+
+        <div class="layout">
+            <aside class="toc">
+                <h3>On this page</h3>
+                <a href="#overview">Overview</a>
+                <a href="#workflow">Typical workflow</a>
+                <a href="#features">Features</a>
+                <a href="#dashboard">Reading the dashboard</a>
+                <a href="#risk">Risk levels</a>
+                <a href="#api">API endpoints</a>
+                <a href="#security">Security & ethics</a>
+            </aside>
+
+            <div class="doc">
+                <section id="overview">
+                    <h2>What is Sentinel?</h2>
+                    <p><strong>DroidNet Sentinel</strong> is a network-security
+                       toolkit that audits the Wi-Fi networks you own or are
+                       authorised to test. It discovers live hosts, fingerprints
+                       open services, classifies risk, and tracks how the
+                       network changes over time.</p>
+                    <p>The CLI is the operator's surface; this web dashboard is
+                       the read-only view of the audit history stored in
+                       <code>sentinel.db</code>.</p>
+                </section>
+
+                <section id="workflow">
+                    <h2>Typical workflow</h2>
+                    <ol style="padding-left: 22px; color: var(--text-mut);">
+                        <li>Connect to the network you want to audit.</li>
+                        <li>Run <code>python main.py scan</code> (one-shot) or
+                            <code>python main.py daemon</code> (continuous).</li>
+                        <li>Open this dashboard to review the findings.</li>
+                        <li>Use <code>python main.py hunt</code> to look up
+                            known exploits for the services you found.</li>
+                        <li>Use <code>python main.py cve</code> to check the
+                            scan against recent CVEs.</li>
+                    </ol>
+                </section>
+
+                <section id="features">
+                    <h2>Features</h2>
+                    <div class="feat-list">
+                        <div class="feat">
+                            <h4>Sentinel — Network scan</h4>
+                            <p>Discovers live hosts, performs an Nmap-style port
+                               scan and stores results in the database.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>Daemon mode</h4>
+                            <p>Runs Sentinel in the background on a fixed cadence
+                               and emits Telegram alerts when something changes.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>Hunter</h4>
+                            <p>Cross-references the latest scan against the
+                               local Exploit-DB index via <code>searchsploit</code>.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>CVE Watcher</h4>
+                            <p>Fingerprints services and queries the NVD for
+                               relevant CVEs published recently.</p>
+                        </div>
+                        <div class="feat">
+                            <h4>Spoofer (ARP)</h4>
+                            <p>Manual ARP-poisoning tool for cutting access to
+                               an IP. <strong>Authorised use only.</strong></p>
+                        </div>
+                        <div class="feat">
+                            <h4>Deauther (802.11)</h4>
+                            <p>Sends 802.11 deauth frames against a target or
+                               broadcast. Requires monitor mode and root.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="dashboard">
+                    <h2>Reading the dashboard</h2>
+                    <p>Each card represents one scan of one network. Hosts are
+                       coloured by risk and decorated with badges:</p>
+                    <ul>
+                        <li><strong>Network</strong> — the SSID or CIDR of the
+                            audited segment.</li>
+                        <li><strong>Devices</strong> — total hosts that responded
+                            in this scan.</li>
+                        <li><span class="badge badge-new">new</span> — host
+                            seen for the first time vs the previous scan of
+                            the same network.</li>
+                        <li><strong>Disappeared</strong> — host that was present
+                            in the previous scan and is missing now.</li>
+                        <li><strong>Port changes</strong> — diff of open services
+                            between this scan and the previous one
+                            (<span class="added" style="color:var(--ok)">+ added</span> /
+                            <span class="removed" style="color:var(--danger)">- removed</span>).</li>
+                    </ul>
+                    <p>Press <span class="kbd">Ctrl</span> + <span class="kbd">F</span>
+                       to filter visible cards by IP or by service banner.</p>
+                </section>
+
+                <section id="risk">
+                    <h2>Risk levels</h2>
+                    <p>Sentinel assigns one risk label per host based on the
+                       set of open TCP ports it found:</p>
+                    <table class="risk-table">
+                        <tr><th>Label</th><th>Trigger</th><th>What it means</th></tr>
+                        <tr>
+                            <td><span class="pill r-critical">CRITICAL</span></td>
+                            <td>FTP / Telnet / SMB / NetBIOS / RDP</td>
+                            <td>High-impact service that should not be
+                                exposed on a typical home network.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="pill r-medium">MEDIUM</span></td>
+                            <td>HTTP / HTTP-alt / DNS / SSDP / NFS</td>
+                            <td>Service exposed to the LAN. Often expected,
+                                but worth a banner check.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="pill r-low">LOW</span></td>
+                            <td>Other open ports</td>
+                            <td>Open service that did not match the higher
+                                tiers. Worth a banner inspection.</td>
+                        </tr>
+                        <tr>
+                            <td><span class="pill r-minimal">MINIMAL</span></td>
+                            <td>No open ports</td>
+                            <td>Host is reachable but exposes no services.</td>
+                        </tr>
+                    </table>
+                </section>
+
+                <section id="api">
+                    <h2>API endpoints</h2>
+                    <p>All endpoints require an authenticated session and
+                       return JSON. Useful for piping into your own tooling.</p>
+                    <ul>
+                        <li><code>GET /api/reports</code> — every scan stored
+                            in the database.</li>
+                        <li><code>GET /api/scan/&lt;id&gt;/diff</code> — diff
+                            of one scan against the previous scan of the same
+                            network.</li>
+                    </ul>
+                </section>
+
+                <section id="security">
+                    <h2>Security &amp; ethics</h2>
+                    <ul>
+                        <li>Sentinel is an offensive-security tool. Only use it
+                            on networks you own or have explicit written
+                            authorisation to test.</li>
+                        <li>The dashboard is loopback-bound by default. Bind
+                            to LAN only behind a TLS proxy (nginx / caddy);
+                            credentials travel in plaintext otherwise.</li>
+                        <li>Auto-generated passwords are stored at
+                            <code>~/.sentinel/credentials</code> with mode
+                            <code>0600</code>. Override with the
+                            <code>SENTINEL_PASS</code> environment variable.</li>
+                        <li>Login is rate-limited (5 attempts per minute per
+                            IP) and protected by a per-session CSRF token.</li>
+                    </ul>
+                </section>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

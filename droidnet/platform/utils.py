@@ -126,19 +126,29 @@ def get_default_gateway(local_ip: str | None = None) -> str | None:
         dotted IPv4 address, fall back to the conventional ``.1`` host of that
         /24. Returns None when neither path yields an address.
     """
+    prefix = None
+    if local_ip and local_ip.count(".") == 3:
+        prefix = local_ip.rsplit(".", 1)[0] + "."
+
     try:
         proc = subprocess.run(
             ["ip", "route", "show", "default"],
             capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
-        match = re.search(r"via\s+(\S+)", proc.stdout)
-        if match:
-            return match.group(1)
+        gateways = re.findall(r"via\s+(\S+)", proc.stdout)
+        # With a cellular/VPN default route active, the first "via" may be
+        # off-LAN; prefer a gateway that sits on the scanned /24.
+        if prefix:
+            for gw in gateways:
+                if gw.startswith(prefix):
+                    return gw
+        if gateways:
+            return gateways[0]
     except Exception:
         pass
 
-    if local_ip and local_ip.count(".") == 3:
-        return ".".join(local_ip.split(".")[:-1]) + ".1"
+    if prefix:
+        return prefix + "1"
     return None
 
 

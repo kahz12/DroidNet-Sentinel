@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel · Sign in</title>
+    <style>
+
+{% include "_base_css.html" %}
+
+        body {
+            display: flex; align-items: center; justify-content: center;
+            padding: 24px;
+        }
+        .login-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 36px 32px;
+            width: 100%; max-width: 380px;
+            box-shadow: var(--shadow);
+        }
+        .login-head {
+            text-align: center; margin-bottom: 28px;
+        }
+        .login-head .logo {
+            width: 52px; height: 52px;
+            margin: 0 auto 14px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 14px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #0a0e14; font-weight: 800; font-size: 22px;
+            box-shadow: 0 8px 22px rgba(88,166,255,0.25);
+        }
+        .login-head h1 {
+            font-size: 1.2rem; letter-spacing: 0.2px;
+        }
+        .login-head p {
+            color: var(--text-mut); font-size: 0.85rem; margin-top: 4px;
+        }
+        label {
+            display: block;
+            color: var(--text-mut);
+            font-size: 0.78rem; letter-spacing: 0.6px;
+            text-transform: uppercase;
+            margin: 14px 0 6px;
+        }
+        input[type=text], input[type=password] {
+            width: 100%; padding: 11px 13px;
+            background: var(--bg-deep);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text);
+            font: inherit;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(88,166,255,0.18);
+        }
+        button.primary {
+            width: 100%; margin-top: 22px; padding: 11px;
+            background: linear-gradient(135deg, var(--accent), #4a92e8);
+            color: #fff; border: none;
+            border-radius: var(--radius-sm);
+            font: inherit; font-weight: 600;
+            cursor: pointer;
+            transition: filter 0.15s, transform 0.05s;
+        }
+        button.primary:hover  { filter: brightness(1.08); }
+        button.primary:active { transform: translateY(1px); }
+        .error {
+            background: rgba(248,81,73,0.10);
+            border: 1px solid rgba(248,81,73,0.55);
+            color: #ff8d85;
+            padding: 10px 12px; border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+        }
+        .footnote {
+            text-align: center;
+            color: var(--text-dim); font-size: 0.78rem;
+            margin-top: 22px;
+        }
+    </style>
+</head>
+<body>
+    <form class="login-card" method="POST" action="{{ url_for('login') }}">
+        <div class="login-head">
+            <div class="logo">S</div>
+            <h1>Sentinel Command Center</h1>
+            <p>Sign in to continue</p>
+        </div>
+
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+        <input type="hidden" name="next"  value="{{ next_url }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+        <label for="u">Username</label>
+        <input id="u" type="text" name="username"
+               autocomplete="username" autofocus>
+
+        <label for="p">Password</label>
+        <input id="p" type="password" name="password"
+               autocomplete="current-password">
+
+        <button class="primary" type="submit">Sign in</button>
+
+        <p class="footnote">Authorised use only.</p>
+    </form>
+</body>
+</html>

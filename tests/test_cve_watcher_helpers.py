@@ -50,6 +50,21 @@ def test_parse_extracts_cwes_and_kev():
     assert out[0]["kev"] is True
 
 
+def test_parse_survives_null_cwe_value():
+    # A weakness description whose value is null (JSON null -> None) must be
+    # skipped, not crash the parser with AttributeError.
+    payload = {"vulnerabilities": [
+        {"cve": {"id": "CVE-2024-3",
+                 "descriptions": [{"lang": "en", "value": "x"}],
+                 "weaknesses": [{"description": [
+                     {"lang": "en", "value": None},
+                     {"lang": "en", "value": "CWE-89"},
+                 ]}]}},
+    ]}
+    out = _parse_nvd_payload(payload)
+    assert out[0]["cwes"] == ["CWE-89"]
+
+
 def test_parse_defaults_when_no_cwe_or_kev():
     payload = {"vulnerabilities": [
         {"cve": {"id": "CVE-2024-2", "descriptions": [{"lang": "en", "value": "x"}]}},

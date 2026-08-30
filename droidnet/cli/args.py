@@ -23,7 +23,6 @@ Global flags:
 """
 
 import argparse
-import sys
 
 from rich import print as rprint
 

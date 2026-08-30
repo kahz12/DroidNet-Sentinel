@@ -288,7 +288,7 @@ def _extract_cwes(cve: dict) -> list[str]:
         for d in weakness.get("description", []):
             if isinstance(d, dict):
                 value = d.get("value", "")
-                if value.startswith("CWE-") and value not in cwes:
+                if isinstance(value, str) and value.startswith("CWE-") and value not in cwes:
                     cwes.append(value)
     return cwes
 

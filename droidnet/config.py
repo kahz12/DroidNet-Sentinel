@@ -33,8 +33,21 @@ RESCAN_HOURS   = 6    # hours before re-scanning the same network
 # ── Telegram C2 ───────────────────────────────────────────────────
 # Reads from env vars; falls back to placeholder strings that the
 # notifier module treats as "not configured" → silent no-op.
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "TOKEN_DE_BOTFATHER")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ID_NUMERICO")
+_TELEGRAM_TOKEN_PLACEHOLDER  = "CHANGEME_BOT_TOKEN"
+_TELEGRAM_CHATID_PLACEHOLDER = "CHANGEME_CHAT_ID"
+
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   _TELEGRAM_TOKEN_PLACEHOLDER)
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", _TELEGRAM_CHATID_PLACEHOLDER)
+
+
+def telegram_configured() -> bool:
+    """True when both Telegram env vars hold real (non-placeholder) values."""
+    return (
+        bool(TELEGRAM_TOKEN)
+        and bool(TELEGRAM_CHAT_ID)
+        and TELEGRAM_TOKEN != _TELEGRAM_TOKEN_PLACEHOLDER
+        and TELEGRAM_CHAT_ID != _TELEGRAM_CHATID_PLACEHOLDER
+    )
 
 
 _CONFIG_SCHEMA: dict = {
@@ -58,7 +71,7 @@ def _is_ip_or_cidr(value: str) -> bool:
         return False
 
 
-def _fresh_default(default):
+def _fresh_default(default: object) -> object:
     """
     Return a copy of *default* so callers never share mutable schema state.
 
