@@ -13,5 +13,5 @@ scapy>=2.5,<3
 # Optional: the dashboard already includes its own in-memory rate-limiting and CSRF
 # protection. If you deploy behind a reverse proxy or with multiple workers, 
 # replace them with:
-# flask-limiter>=3.5,<4   # rate-limiting with redis/memcached backend
-# flask-wtf>=1.2,<2       # CSRF with signed tokens
+flask-limiter>=3.5,<4   # rate-limiting with redis/memcached backend
+flask-wtf>=1.2,<2       # CSRF with signed tokens

@@ -66,6 +66,8 @@ Command Center.
 pkg install python nmap termux-api
 git clone https://github.com/kahz12/DroidNet-Sentinel.git
 cd DroidNet-Sentinel
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
@@ -73,9 +75,11 @@ python main.py
 ### Linux — Debian / Ubuntu / Kali
 
 ```bash
-sudo apt install python3 python3-pip nmap dsniff libnotify-bin wireless-tools
+sudo apt install python3 python3-pip python3-venv nmap dsniff libnotify-bin wireless-tools
 git clone https://github.com/kahz12/DroidNet-Sentinel.git
 cd DroidNet-Sentinel
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
