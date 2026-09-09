@@ -6,7 +6,6 @@ are available. Works on both Android (Termux) and Linux PC.
 """
 
 from rich.console import Console
-from rich.table   import Table
 
 from droidnet.platform.utils import (
     is_termux,

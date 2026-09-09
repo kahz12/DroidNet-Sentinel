@@ -18,6 +18,8 @@ import subprocess
 
 from rich import print as rprint
 
+_COMMAND_TIMEOUT = 10
+
 
 # ══════════════════════════════════════════════════════════════════
 #  Platform detection
@@ -98,7 +100,7 @@ def get_default_iface() -> str:
     try:
         proc = subprocess.run(
             ["ip", "route", "show", "default"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         match = re.search(r"dev\s+(\S+)", proc.stdout)
         if match:
@@ -129,7 +131,7 @@ def get_default_gateway(local_ip: str | None = None) -> str | None:
     try:
         proc = subprocess.run(
             ["ip", "route", "show", "default"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         match = re.search(r"via\s+(\S+)", proc.stdout)
         if match:
@@ -153,7 +155,7 @@ def _get_local_ip() -> str | None:
     try:
         proc = subprocess.run(
             ["ip", "route", "get", "1"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         match = re.search(r"src\s+(\S+)", proc.stdout)
         if match:
@@ -164,7 +166,7 @@ def _get_local_ip() -> str | None:
     try:
         proc = subprocess.run(
             ["hostname", "-I"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         ips = proc.stdout.strip().split()
         if ips:
@@ -180,7 +182,7 @@ def _get_wifi_info_termux() -> dict | None:
     try:
         proc = subprocess.run(
             ["termux-wifi-connectioninfo"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         data = _json.loads(proc.stdout)
         if data.get("supplicant_state") == "COMPLETED":
@@ -195,11 +197,32 @@ def _get_wifi_info_termux() -> dict | None:
     return None
 
 
+def _split_nmcli_fields(line: str) -> list[str]:
+    """Decode nmcli terse fields, respecting escaped colons and backslashes."""
+    fields, current = [], []
+    escaped = False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    fields.append("".join(current))
+    return fields
+
+
 def _get_wifi_info_nmcli() -> dict | None:
     try:
         proc = subprocess.run(
             ["nmcli", "-t", "-f", "active,ssid,bssid", "dev", "wifi"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
             # Force the C locale so the "active" field is always "yes"/"no",
             # not a locale-translated value.
             env={**os.environ, "LC_ALL": "C"},
@@ -209,10 +232,9 @@ def _get_wifi_info_nmcli() -> dict | None:
 
         for line in proc.stdout.strip().split("\n"):
             if line.lower().startswith("yes:"):
-                parts = line.split(":")
+                parts = _split_nmcli_fields(line)
                 ssid      = parts[1] if len(parts) > 1 else "Unknown"
-                bssid_raw = ":".join(parts[2:]) if len(parts) > 2 else "Unknown"
-                bssid     = bssid_raw.replace("\\", "")
+                bssid = parts[2] if len(parts) > 2 else "Unknown"
                 ip_addr   = _get_local_ip()
                 if ip_addr:
                     return {"ssid": ssid, "ip": ip_addr, "bssid": bssid, "platform": "linux"}
@@ -226,7 +248,7 @@ def _get_wifi_info_iwconfig() -> dict | None:
         iface = get_default_iface()
         proc  = subprocess.run(
             ["iwconfig", iface],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         if proc.returncode != 0:
             return None

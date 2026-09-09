@@ -1,5 +1,7 @@
 """Unit tests for sentinel module helpers (no network/subprocess)."""
 
+from unittest.mock import Mock
+
 import droidnet.modules.sentinel as sentinel
 import droidnet.platform.utils as utils
 from droidnet.modules.sentinel import _sanitize_ssid
@@ -57,43 +59,52 @@ def test_gateway_none_without_route_or_ip(monkeypatch):
     assert get_default_gateway(None) is None
 
 
-class _SyncThread:
-    """Stand-in for threading.Thread that runs the target synchronously."""
-    def __init__(self, target=None, args=(), daemon=None, **_):
-        self._target, self._args = target, args
-
-    def start(self):
-        if self._target:
-            self._target(*self._args)
-
-
 def test_cut_unknowns_protects_self_gateway_and_trusted(monkeypatch):
-    import droidnet.modules.spoofer as spoofer
-
-    cut: list[str] = []
-    monkeypatch.setattr(spoofer, "poison", lambda ip, gw, iface: cut.append(ip))
+    jobs = Mock()
     monkeypatch.setattr(sentinel, "get_default_gateway", lambda my_ip: "192.168.1.1")
     monkeypatch.setattr(sentinel, "get_default_iface", lambda: "wlan0")
-    monkeypatch.setattr(sentinel.threading, "Thread", _SyncThread)
 
     targets = ["192.168.1.1", "192.168.1.10", "192.168.1.50", "192.168.1.99"]
     sentinel.cut_unknowns(targets, my_ip="192.168.1.10",
-                          config={"trusted_ips": ["192.168.1.50"]})
+                          config={"trusted_ips": ["192.168.1.50"]}, jobs=jobs)
 
     # gateway (.1), self (.10) and trusted (.50) are spared; only .99 is cut.
-    assert cut == ["192.168.1.99"]
+    jobs.update.assert_called_once_with({("192.168.1.99", "192.168.1.1", "wlan0")})
 
 
 def test_cut_unknowns_aborts_when_gateway_unknown(monkeypatch):
-    import droidnet.modules.spoofer as spoofer
-
-    cut: list[str] = []
-    monkeypatch.setattr(spoofer, "poison", lambda *a, **k: cut.append(a))
+    jobs = Mock()
     monkeypatch.setattr(sentinel, "get_default_gateway", lambda my_ip: None)
-    monkeypatch.setattr(sentinel.threading, "Thread", _SyncThread)
 
-    sentinel.cut_unknowns(["192.168.1.99"], my_ip="192.168.1.10", config={})
-    assert cut == []
+    sentinel.cut_unknowns(["192.168.1.99"], my_ip="192.168.1.10", config={}, jobs=jobs)
+    jobs.update.assert_called_once_with(set())
+
+
+def test_cut_unknowns_protects_cidr_and_host_prefix(monkeypatch):
+    jobs = Mock()
+    monkeypatch.setattr(sentinel, "get_default_gateway", lambda _: "192.168.1.1")
+    monkeypatch.setattr(sentinel, "get_default_iface", lambda: "fake0")
+    sentinel.cut_unknowns(["192.168.1.50", "192.168.2.50", "192.168.3.50"],
+                          "192.168.1.10", {"trusted_ips": ["192.168.1.0/24", "192.168.2.50/32"]}, jobs)
+    jobs.update.assert_called_once_with({("192.168.3.50", "192.168.1.1", "fake0")})
+
+
+def test_menu_daemon_interrupt_reaches_scanner_cleanup(monkeypatch, capsys):
+    from droidnet.cli import menu
+    cleaned = []
+
+    def scanner(**kwargs):
+        assert kwargs == {"interactive": False, "auto_cut": False}
+        try:
+            raise KeyboardInterrupt
+        finally:
+            cleaned.append(True)
+
+    monkeypatch.setattr(menu, "_ask_auto_cut", lambda: False)
+    monkeypatch.setattr(sentinel, "run_sentinel", scanner)
+    menu._run_sentinel_daemon()
+    assert cleaned == [True]
+    assert "Daemon stopped" in capsys.readouterr().out
 
 
 # ── risk markup colour + single classify call ───────────────────────

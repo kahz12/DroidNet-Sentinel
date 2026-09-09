@@ -23,7 +23,6 @@ Global flags:
 """
 
 import argparse
-import sys
 
 from rich import print as rprint
 
@@ -179,7 +178,8 @@ def _run_deauth(target: str, bssid: str, iface: str,
 
 
 def _run_db_purge(days: int) -> None:
-    from droidnet.core.database import purge_old_scans
+    from droidnet.core.database import init_db, purge_old_scans
+    init_db()
     deleted = purge_old_scans(days)
     rprint(f"[green][+][/green] Purged {deleted} scans older than {days} days.")
 

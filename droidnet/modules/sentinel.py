@@ -8,10 +8,12 @@ Flow per cycle:
 """
 
 import json
+import ipaddress
 import re
 import subprocess
 import threading
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,10 +42,11 @@ console = Console()
 # ══════════════════════════════════════════════════════════════════
 #  Risk evaluation
 # ══════════════════════════════════════════════════════════════════
-# Single source of truth for the port→risk mapping lives in core.database
+# Single source of truth for the port→risk mapping lives in core.risk
 # (classify_risk). Here we only decorate it with Rich markup for the TUI.
 
 _RISK_MARKUP = {
+    "UNKNOWN":  "[bold yellow]UNKNOWN[/bold yellow]",
     "MINIMAL":  "[bold green]MINIMAL[/bold green]",
     "LOW":      "[bold blue]LOW[/bold blue]",   # blue — matches README + dashboard
     "MEDIUM":   "[bold yellow]MEDIUM[/bold yellow]",
@@ -118,41 +121,23 @@ def display_results_table(
 # ══════════════════════════════════════════════════════════════════
 
 def _parse_nmap_sn(output: str) -> dict[str, dict]:
-    """
-    Parse `nmap -sn` output extracting IP, hostname, MAC and vendor.
-
-    Returns:
-        {ip: {"hostname": str|None, "mac": str|None, "vendor": str|None}}
-    """
+    """Parse completed discovery XML; malformed/incomplete results raise."""
+    root = ET.fromstring(output)
+    finished = root.find("runstats/finished")
+    if finished is None or finished.get("exit") != "success":
+        raise ValueError("Incomplete Nmap discovery")
     hosts: dict[str, dict] = {}
-    blocks = re.split(r"(?=Nmap scan report for )", output)
-
-    for block in blocks:
-        if not block.startswith("Nmap scan report for "):
+    for host in root.findall("host"):
+        status = host.find("status")
+        address = host.find("address[@addrtype='ipv4']")
+        if status is None or status.get("state") != "up" or address is None:
             continue
-
-        first_line = block.split("\n", 1)[0]
-        m = re.match(
-            r"Nmap scan report for (\S+) \((\d+\.\d+\.\d+\.\d+)\)", first_line
-        )
-        if m:
-            hostname, ip = m.group(1), m.group(2)
-        else:
-            m = re.match(r"Nmap scan report for (\d+\.\d+\.\d+\.\d+)", first_line)
-            if not m:
-                continue
-            hostname, ip = None, m.group(1)
-
-        mac_match = re.search(
-            r"MAC Address: ([0-9A-Fa-f:]{17})(?:\s+\(([^)]*)\))?", block
-        )
-        mac = mac_match.group(1) if mac_match else None
-        vendor = (
-            mac_match.group(2).strip() if mac_match and mac_match.group(2) else None
-        )
-
-        hosts[ip] = {"hostname": hostname, "mac": mac, "vendor": vendor}
-
+        ip = str(ipaddress.IPv4Address(address.get("addr")))
+        name = host.find("hostnames/hostname")
+        mac = host.find("address[@addrtype='mac']")
+        hosts[ip] = {"hostname": name.get("name") if name is not None else None,
+                     "mac": mac.get("addr") if mac is not None else None,
+                     "vendor": mac.get("vendor") if mac is not None else None}
     return hosts
 
 
@@ -171,7 +156,7 @@ def _run_nmap_sn(args: list[str]) -> tuple[int, str]:
         return 1, ""
 
 
-def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict]:
+def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict] | None:
     """
     Host discovery on the /24 subnet of *ip_address*.
 
@@ -189,18 +174,21 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict]:
     subnet      = ".".join(ip_address.split(".")[:-1]) + ".0/24"
     exclude_arg = ["--exclude", ",".join(excluded)] if excluded else []
 
-    rc, out = _run_nmap_sn(["nmap", "-sn", subnet] + exclude_arg)
-    hosts = _parse_nmap_sn(out) if rc == 0 else {}
-
-    if not hosts:
-        rprint("[dim][-] -sn returned nothing. Trying -PE -PA -PS fallback...[/dim]")
-        rc, out = _run_nmap_sn(
-            ["nmap", "-sn", "-PE", "-PA80", "-PS22,80,443", subnet] + exclude_arg
-        )
-        if rc == 0:
+    completed_empty = False
+    for probes in ([], ["-PE", "-PA80", "-PS22,80,443"]):
+        rc, out = _run_nmap_sn(["nmap", "-sn", "-oX", "-", *probes, subnet] + exclude_arg)
+        if rc != 0:
+            continue
+        try:
             hosts = _parse_nmap_sn(out)
-
-    return hosts
+        except (ET.ParseError, ValueError, TypeError):
+            continue
+        if hosts:
+            return hosts
+        completed_empty = True
+    # An empty successful primary remains valid even if the optional fallback
+    # is unavailable. None means neither command completed a usable scan.
+    return {} if completed_empty else None
 
 
 _DEEP_SCAN_WORKERS = 16
@@ -210,12 +198,39 @@ def _scan_one(ip: str) -> tuple[str, list[str]]:
     """Run nmap -F -sV -T4 on a single IP. Returns (ip, ports_or_marker)."""
     try:
         proc = subprocess.run(
-            ["nmap", "-F", "-sV", "-T4", ip],
+            ["nmap", "-F", "-sV", "-T4", "-oX", "-", ip],
             capture_output=True, text=True, timeout=120,
             stdin=subprocess.DEVNULL,
         )
-        ports = re.findall(r"(\d+/tcp\s+open\s+.*)", proc.stdout)
-        return ip, ([p.strip() for p in ports] if ports else ["Shield intact"])
+        if proc.returncode != 0:
+            log.warning("nmap failed ip=%s exit=%d stderr=%s", ip, proc.returncode, proc.stderr.strip())
+            return ip, ["Error: nmap failed"]
+        root = ET.fromstring(proc.stdout)
+        finished = root.find("runstats/finished")
+        if finished is None or finished.get("exit") != "success":
+            return ip, ["Error: incomplete scan"]
+        host = root.find("host")
+        if host is None or host.find("status") is None or host.find("status").get("state") != "up":
+            return ip, ["Error: host unreachable"]
+        ports = []
+        states = [extra.get("state") for extra in host.findall("ports/extraports")]
+        for port in host.findall("ports/port"):
+            state = port.find("state")
+            state_name = state.get("state") if state is not None else None
+            states.append(state_name)
+            if state_name != "open":
+                continue
+            service = port.find("service")
+            attrs = service.attrib if service is not None else {}
+            banner = " ".join(attrs.get(key, "") for key in ("product", "version")).strip()
+            if attrs.get("extrainfo"):
+                banner += f" ({attrs['extrainfo']})"
+            ports.append(f"{port.get('portid')}/{port.get('protocol')} open {attrs.get('name', 'unknown')} {banner}".strip())
+        if ports:
+            return ip, ports
+        if states and all(state == "closed" for state in states):
+            return ip, ["Shield intact"]
+        return ip, ["Error: inconclusive port states"]
     except subprocess.TimeoutExpired:
         return ip, ["Error: timeout"]
     except Exception:
@@ -227,7 +242,7 @@ def deep_scan(live_ips: list[str]) -> dict:
     Fast port and version scan on each live IP, in parallel.
 
     Flags: -F (top 100 ports), -sV (version detection), -T4 (aggressive timing).
-    Up to 8 hosts in parallel (I/O-bound: the GIL is released during subprocess).
+    Up to 16 hosts in parallel (I/O-bound: the GIL is released during subprocess).
 
     Returns:
         {ip: [open port lines]} or {ip: ["Shield intact"]} for closed hosts.
@@ -237,11 +252,16 @@ def deep_scan(live_ips: list[str]) -> dict:
 
     workers = min(_DEEP_SCAN_WORKERS, len(live_ips))
     results: dict = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = [pool.submit(_scan_one, ip) for ip in live_ips]
         for fut in as_completed(futures):
             ip, ports = fut.result()
             results[ip] = ports
+    finally:
+        # On Ctrl+C do not start queued scans. Running subprocesses retain
+        # their 120-second timeout; wait for them before reporting shutdown.
+        pool.shutdown(wait=True, cancel_futures=True)
     return results
 
 
@@ -249,7 +269,51 @@ def deep_scan(live_ips: list[str]) -> dict:
 #  Active response
 # ══════════════════════════════════════════════════════════════════
 
-def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
+class AutoCutSession:
+    """Own response jobs; reconcile targets and restore them before returning."""
+
+    def __init__(self):
+        self.jobs: dict[tuple[str, str, str], tuple[threading.Event, threading.Thread]] = {}
+
+    def update(self, targets: set[tuple[str, str, str]]) -> None:
+        for key in list(self.jobs):
+            stop, thread = self.jobs[key]
+            if key not in targets or not thread.is_alive():
+                stop.set()
+                thread.join()
+                del self.jobs[key]
+        for key in targets - self.jobs.keys():
+            stop = threading.Event()
+            thread = threading.Thread(target=self._run, args=(key, stop))
+            self.jobs[key] = stop, thread
+            try:
+                thread.start()
+            except BaseException:
+                del self.jobs[key]
+                raise
+
+    @staticmethod
+    def _run(key, stop):
+        from droidnet.modules.spoofer import poison
+        try:
+            poison(*key, stop_event=stop)
+        except Exception:
+            log.exception("ARP response failed for %s", key[0])
+
+    def wait(self):
+        while any(thread.is_alive() for _, thread in self.jobs.values()):
+            time.sleep(0.2)
+
+    def close(self):
+        for stop, _ in self.jobs.values():
+            stop.set()
+        for _, thread in self.jobs.values():
+            thread.join()
+        self.jobs.clear()
+
+
+def cut_unknowns(targets: list[str], my_ip: str, config: dict,
+                 jobs: AutoCutSession | None = None) -> None:
     """
     Launch ARP spoofing threads against every IP not in trusted_ips.
 
@@ -257,37 +321,41 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict) -> None:
     absent from trusted_ips — cutting them would ARP-poison the operator and
     knock every device on the LAN off the internet. The gateway is detected
     from the routing table (not hard-assumed to be .1).
-    Each poisoning thread is daemonised and dies when main exits.
+    Jobs are owned by the scan session and stopped when it exits.
 
     Args:
         targets : Active IPs found by ping_sweep.
         my_ip   : Local IP of this device.
         config  : Loaded user config dict (needs "trusted_ips" key).
     """
-    try:
-        from droidnet.modules.spoofer import poison
-    except ImportError:
-        rprint("[yellow][-] spoofer unavailable. Skipping ARP cut.[/yellow]")
+    if jobs is None:
+        owned = AutoCutSession()
+        try:
+            cut_unknowns(targets, my_ip, config, owned)
+            owned.wait()
+        finally:
+            owned.close()
         return
 
     gateway = get_default_gateway(my_ip)
     if not gateway:
+        jobs.update(set())
         rprint("[yellow][-] Could not determine the gateway. Skipping ARP cut.[/yellow]")
         return
 
     # Always protect the local host and gateway, independent of trusted_ips.
-    protected = set(config.get("trusted_ips", [])) | {my_ip, gateway}
-    unknown = [ip for ip in targets if ip not in protected]
+    protected = [ipaddress.ip_network(value, strict=False)
+                 for value in [*config.get("trusted_ips", []), my_ip, gateway]]
+    unknown = [ip for ip in targets
+               if not any(ipaddress.ip_address(ip) in network for network in protected)]
 
     if not unknown:
+        jobs.update(set())
         rprint("[dim][-] No unknown hosts. Network is clean.[/dim]")
         return
 
     iface = get_default_iface()
-    for ip in unknown:
-        rprint(f"[bold red][☠][/bold red] Unknown: [cyan]{ip}[/cyan] — running ARP cut.")
-        t = threading.Thread(target=poison, args=(ip, gateway, iface), daemon=True)
-        t.start()
+    jobs.update({(ip, gateway, iface) for ip in unknown})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -326,6 +394,15 @@ def save_report(ssid: str, scan_data: dict) -> Path:
 # ══════════════════════════════════════════════════════════════════
 
 def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
+    """Run scans and ensure all automatic responses stop on exit."""
+    jobs = AutoCutSession()
+    try:
+        _run_sentinel_loop(interactive, auto_cut, jobs)
+    finally:
+        jobs.close()
+
+
+def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) -> None:
     """
     Main Sentinel loop.
 
@@ -353,6 +430,11 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
     while True:
         info   = get_wifi_info()
         config = load_user_config()
+        if not info or info.get("ssid") != last_ssid or not info.get("ip"):
+            jobs.update(set())
+        elif jobs.jobs:
+            # Revoke jobs when trust settings change, even between scans.
+            cut_unknowns([key[0] for key in jobs.jobs], info["ip"], config, jobs)
 
         # ── Daily DB retention sweep ─────────────────────────────
         # Opt-out by setting db_retention_days <= 0 in config.json.
@@ -389,21 +471,23 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                     excluded.append(my_ip)
 
                 metadata = ping_sweep(my_ip, excluded)
+                if metadata is None:
+                    log.warning("discovery failed network=%s; retry next cycle", current_ssid)
+                    jobs.update(set())
+                    if interactive:
+                        break
+                    time.sleep(CHECK_INTERVAL)
+                    continue
                 live_ips = list(metadata.keys())
-
-                if live_ips:
-                    results = deep_scan(live_ips)
-                    ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    save_report(current_ssid, results)
-                    save_scan(current_ssid, ts, results)
-                    display_results_table(current_ssid, results, metadata)
-                    log.info("scan finished network=%s hosts=%d",
-                             current_ssid, len(live_ips))
-                    if auto_cut:
-                        cut_unknowns(live_ips, my_ip, config)
-                    else:
-                        rprint("[dim][-] auto-cut disabled. Use --auto-cut for ARP cut.[/dim]")
-                else:
+                results = deep_scan(live_ips)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_report(current_ssid, results)
+                save_scan(current_ssid, ts, results)
+                display_results_table(current_ssid, results, metadata)
+                log.info("scan finished network=%s hosts=%d", current_ssid, len(live_ips))
+                if auto_cut:
+                    cut_unknowns(live_ips, my_ip, config, jobs)
+                if not live_ips:
                     rprint("[yellow][-] No hosts detected on the network.[/yellow]")
                     log.warning("scan empty network=%s (no hosts detected)",
                                 current_ssid)
@@ -423,6 +507,9 @@ def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
                 last_ssid, last_scan_time = current_ssid, now
 
         if interactive:
+            if auto_cut:
+                rprint("[dim]Press Ctrl+C to stop active responses and restore ARP.[/dim]")
+                jobs.wait()
             break
 
         time.sleep(CHECK_INTERVAL)

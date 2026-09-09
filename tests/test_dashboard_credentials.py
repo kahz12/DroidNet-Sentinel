@@ -1,7 +1,6 @@
 """Unit tests for dashboard credentials persistence (~/.sentinel/credentials)."""
 
 import os
-import stat
 from pathlib import Path
 
 import pytest
@@ -82,3 +81,19 @@ def test_read_strips_trailing_whitespace(cred_paths):
     os.write(fd, b"padded  \n")
     os.close(fd)
     assert dash._read_persisted_password() == "padded"
+
+
+def test_unicode_login_and_invalid_csrf(monkeypatch):
+    monkeypatch.setattr(dash, "_USER", "José")
+    monkeypatch.setattr(dash, "_PASS", "contraseña🔐")
+    monkeypatch.setattr(dash, "_login_rate_limited", lambda _: False)
+    client = dash.app.test_client()
+    client.get("/login")
+    with client.session_transaction() as session:
+        token = session["_csrf_token"]
+    assert client.post("/login", data={"_csrf": "ñ"}).status_code == 400
+    assert client.post("/login", data={"_csrf": token, "username": "José", "password": "incorrecta"}).status_code == 200
+    response = client.post("/login", data={"_csrf": token, "username": "José", "password": "contraseña🔐"})
+    assert response.status_code == 302
+    with client.session_transaction() as session:
+        assert session["authenticated"] is True

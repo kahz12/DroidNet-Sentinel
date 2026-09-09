@@ -7,6 +7,7 @@ A host's risk is derived from the set of its open TCP ports:
     MEDIUM   → at least one port in _MEDIUM   (HTTP/DNS/SSDP/NFS)
     LOW      → has open ports but none of the above
     MINIMAL  → no open ports (closed host)
+    UNKNOWN  → failed or inconclusive scan
 
 Both modules.sentinel.evaluate_risk (Rich-decorated) and
 core.database.save_scan / get_*_with_diffs build on top of
@@ -44,15 +45,18 @@ def classify_risk(ports: list[str]) -> str:
     string like "80/tcp open http nginx 1.18.0". Only the first whitespace
     token (the port id) is consulted.
 
-    Possible return values: MINIMAL / LOW / MEDIUM / CRITICAL.
+    Possible return values: MINIMAL / LOW / MEDIUM / CRITICAL / UNKNOWN.
     """
     if not ports or ports == [_CLOSED_MARKER]:
         return "MINIMAL"
+    if any(entry.startswith("Error") for entry in ports):
+        return "UNKNOWN"
 
     level = "LOW"
     for entry in ports:
         # Defensive: an empty string would IndexError on .split()[0].
-        head = entry.split(None, 1)[0] if entry else ""
+        tokens = entry.split(None, 1)
+        head = tokens[0] if tokens else ""
         if head in _CRITICAL:
             return "CRITICAL"
         if head in _MEDIUM:

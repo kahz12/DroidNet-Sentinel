@@ -7,8 +7,6 @@ that bridge user input to the feature modules.
 
 import json
 import os
-import threading
-import time
 
 from rich           import print as rprint
 from rich.align     import Align
@@ -348,15 +346,10 @@ def _run_sentinel_daemon() -> None:
     auto_cut = _ask_auto_cut()
     rprint("[bold yellow][!][/bold yellow] Starting Sentinel in daemon mode...")
     rprint("[dim]Press Ctrl+C to stop.[/dim]\n")
-    t = threading.Thread(
-        target=run_sentinel,
-        kwargs={"interactive": False, "auto_cut": auto_cut},
-        daemon=True,
-    )
-    t.start()
     try:
-        while t.is_alive():
-            time.sleep(1)
+        # Keep the loop on the main thread so Ctrl+C reaches the scanner
+        # and runs its cleanup before returning to the menu.
+        run_sentinel(interactive=False, auto_cut=auto_cut)
     except KeyboardInterrupt:
         rprint("\n[bold yellow][!][/bold yellow] Daemon stopped.")
 

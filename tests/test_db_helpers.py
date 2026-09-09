@@ -3,7 +3,6 @@
 import sqlite3
 from pathlib import Path
 
-import pytest
 
 from droidnet.core.database import _compute_diff, _has_open_ports
 
@@ -90,6 +89,15 @@ def test_purge_zero_or_negative_is_optout():
     from droidnet.core.database import purge_old_scans
     assert purge_old_scans(0) == 0
     assert purge_old_scans(-5) == 0
+
+
+def test_cli_purge_initialises_a_fresh_database(tmp_path, monkeypatch, capsys):
+    from droidnet.cli.args import _run_db_purge
+    from droidnet.core import database
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "fresh.db")
+    _run_db_purge(90)
+    assert database.count_scans() == 0
+    assert "Purged 0 scans" in capsys.readouterr().out
 
 
 # ── cve_alerts dedup includes network ────────────────────────────

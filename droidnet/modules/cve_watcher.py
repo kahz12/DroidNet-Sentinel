@@ -130,13 +130,15 @@ def _cache_path(query_id: str) -> Path:
 def _cache_load(query_id: str) -> list[dict] | None:
     """Returns the cached result if it exists and is fresh (<24h)."""
     path = _cache_path(query_id)
-    if not path.is_file():
-        return None
-    if (time.time() - path.stat().st_mtime) > _CACHE_TTL_SECONDS:
-        return None
     try:
+        if (time.time() - path.stat().st_mtime) > _CACHE_TTL_SECONDS:
+            return None
         with path.open() as fh:
-            return json.load(fh)
+            cached = json.load(fh)
+        # Older caches may contain only the first page; never reuse them.
+        if isinstance(cached, dict) and cached.get("schema") == 2 and isinstance(cached.get("results"), list):
+            return cached["results"]
+        return None
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -146,7 +148,7 @@ def _cache_store(query_id: str, results: list[dict]) -> None:
     try:
         NVD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with _cache_path(query_id).open("w") as fh:
-            json.dump(results, fh)
+            json.dump({"schema": 2, "results": results}, fh)
     except OSError:
         pass
 
@@ -332,7 +334,7 @@ def query_nvd(
     keyword: str,
     days_back: int = 120,
     cpe_name: str | None = None,
-) -> list[dict]:
+) -> list[dict] | None:
     """
     Query NIST NVD for CVEs published in the last *days_back* days.
 
@@ -341,17 +343,22 @@ def query_nvd(
 
     Results are cached to disk by (query, UTC day) for 24h to avoid
     re-querying NVD for the same day's repetitions.
+    Returns None on failed/incomplete queries; [] means a completed search
+    with no matches. Only complete result sets are cached.
     """
-    now_utc   = datetime.now(timezone.utc)
-    pub_start = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000")
-    pub_end   = now_utc.strftime("%Y-%m-%dT23:59:59.999")
+    if isinstance(days_back, bool) or not isinstance(days_back, int) or not 1 <= days_back <= 120:
+        raise ValueError("days_back must be an integer between 1 and 120")
+    now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+    pub_start = (now_utc - timedelta(days=days_back)).isoformat(timespec="milliseconds")
+    pub_end = now_utc.isoformat(timespec="milliseconds")
 
     if cpe_name:
         params = {
             "cpeName":        cpe_name,
+            "isVulnerable":   "",
             "pubStartDate":   pub_start,
             "pubEndDate":     pub_end,
-            "resultsPerPage": 10,
+            "resultsPerPage": 2000,
         }
         cache_key   = f"cpe:{cpe_name}:{days_back}"
         query_label = cpe_name
@@ -360,7 +367,7 @@ def query_nvd(
             "keywordSearch":  keyword,
             "pubStartDate":   pub_start,
             "pubEndDate":     pub_end,
-            "resultsPerPage": 10,
+            "resultsPerPage": 2000,
         }
         cache_key   = f"kw:{keyword.lower()}:{days_back}"
         query_label = keyword
@@ -372,11 +379,27 @@ def query_nvd(
         return cached
     log.debug("nvd cache miss query=%s", query_label)
 
-    data = _nvd_get(params, query_label)
-    if data is None:
-        return []
-
-    results = _parse_nvd_payload(data)
+    results = []
+    start = 0
+    while True:
+        data = _nvd_get({**params, "startIndex": start}, query_label)
+        if not isinstance(data, dict):
+            return None
+        items = data.get("vulnerabilities")
+        total = data.get("totalResults")
+        if (not isinstance(items, list) or not isinstance(total, int)
+                or total < 0 or data.get("startIndex") != start
+                or any(not isinstance(item, dict) or not isinstance(item.get("cve"), dict) for item in items)):
+            log.warning("invalid NVD page query=%s", query_label)
+            return None
+        if not items and start < total:
+            log.warning("incomplete NVD pagination query=%s", query_label)
+            return None
+        results.extend(_parse_nvd_payload(data))
+        start += len(items)
+        if start >= total:
+            break
+        time.sleep(_REQUEST_DELAY)
     _cache_store(cache_key, results)
     return results
 
@@ -449,7 +472,11 @@ def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[st
         attack_hints.append("authentication bypass")
 
     lines = []
-    lines.append(f"Affected service: {product} {version} on {ip_count} host(s)")
+    candidate = service_info.get("match_type") == "candidate"
+    if candidate:
+        lines.append(f"Candidate match: {product} {version} on {ip_count} host(s); version applicability unverified")
+    else:
+        lines.append(f"Affected service: {product} {version} on {ip_count} host(s)")
 
     if cve.get("kev"):
         lines.append("CISA KEV: known exploited in the wild")
@@ -461,7 +488,9 @@ def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[st
     if cwes:
         lines.append(f"Weakness: {', '.join(cwes)}")
 
-    if cve.get("kev") or severity == "CRITICAL" or (score and score >= 9.0):
+    if candidate:
+        lines.append("Verify the affected versions before remediation")
+    elif cve.get("kev") or severity == "CRITICAL" or (score and score >= 9.0):
         lines.append("ACTION REQUIRED: Update or isolate this service immediately")
     elif severity == "HIGH" or (score and score >= 7.0):
         lines.append("Recommendation: Prioritise updating this service")
@@ -477,18 +506,22 @@ def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[st
 #  Display
 # ══════════════════════════════════════════════════════════════════
 
-def display_cve_table(matches: list[dict]) -> None:
+def display_cve_table(matches: list[dict], complete: bool = True) -> None:
     """Render a Rich table with CVE matches."""
     if not matches:
-        rprint("[green][✓] No relevant CVEs found for detected services.[/green]")
+        if complete:
+            rprint("[green][✓] No matching CVEs found in the queried publication window.[/green]")
+        else:
+            rprint("[yellow]CVE analysis incomplete: queries failed; absence of vulnerabilities is unknown.[/yellow]")
         return
 
     table = Table(
-        title="[bold red]CVE-Watcher — Vulnerabilities detected[/bold red]",
+        title="[bold red]CVE-Watcher — CVE matches[/bold red]",
         show_header=True,
         header_style="bold red",
     )
     table.add_column("CVE",       style="bold white", width=18)
+    table.add_column("Match",     style="white")
     table.add_column("Severity",  justify="center",   width=10)
     table.add_column("Score",     justify="center",   width=6)
     table.add_column("Service",   style="cyan",       width=22)
@@ -504,6 +537,7 @@ def display_cve_table(matches: list[dict]) -> None:
 
         table.add_row(
             m["cve_id"],
+            "Candidate" if m.get("match_type") == "candidate" else "CPE",
             sev_display,
             score_str,
             m["service"],
@@ -548,7 +582,7 @@ def _build_telegram_report(matches: list[dict], network: str) -> str:
     lines = [
         "\U0001f6a8 *CVE-Watcher Alert*\n",
         f"\U0001f4e1 *Network:* `{escape_markdown(network)}`",
-        f"\u26a0\ufe0f *Vulnerabilities:* {len(matches)}\n",
+        f"\u26a0\ufe0f *CVE matches:* {len(matches)}\n",
     ]
 
     for m in matches[:5]:
@@ -557,7 +591,8 @@ def _build_telegram_report(matches: list[dict], network: str) -> str:
         service_md = escape_markdown(m["service"])
         impact_md  = escape_markdown(m["impact"][:100])
         lines.append(
-            f"{emoji} `{m['cve_id']}` — *{m['severity']}* ({score_str})\n"
+            f"{emoji} `{m['cve_id']}` — *{m['severity']}* ({score_str}) "
+            f"({'candidate' if m.get('match_type') == 'candidate' else 'CPE match'})\n"
             f"   {service_md} \u2192 {', '.join(m['ips'][:3])}\n"
             f"   _{impact_md}_\n"
         )
@@ -572,7 +607,19 @@ def _build_telegram_report(matches: list[dict], network: str) -> str:
 #  Main entry point
 # ══════════════════════════════════════════════════════════════════
 
-def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[dict]:
+class CVEWatchResult(list):
+    """List-compatible matches with explicit query completion status."""
+
+    def __init__(self):
+        super().__init__()
+        self.failed_queries: list[str] = []
+
+    @property
+    def complete(self) -> bool:
+        return not self.failed_queries
+
+
+def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> CVEWatchResult:
     """
     Main CVE-Watcher flow.
 
@@ -589,7 +636,10 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
     Returns:
         List of matched CVE dicts.
     """
+    if isinstance(days_back, bool) or not isinstance(days_back, int) or not 1 <= days_back <= 120:
+        raise ValueError("days_back must be an integer between 1 and 120")
     init_db()
+    all_matches = CVEWatchResult()
 
     rprint(
         Panel(
@@ -599,34 +649,33 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
         )
     )
 
-    # Step 1: Load scan data
+    # Load the newest persisted scan that contains service banners.
     scan = get_latest_scan_with_services()
     if not scan:
         rprint("[yellow][-] No scans with detected services found. Run Sentinel first.[/yellow]")
         if show_history:
             display_alerts_history(get_cve_alerts())
-        return []
+        return all_matches
 
     network = scan["network"]
     scan_id = scan["id"]
     rprint(f"[*] Analysing scan from [bold white]{network}[/bold white] (ID: {scan_id})")
 
-    # Step 2: Extract keywords
+    # Normalize banners into deduplicated service queries.
     keywords = build_search_keywords(scan["targets"])
     if not keywords:
         rprint("[yellow][-] No services with identifiable version found.[/yellow]")
-        return []
+        return all_matches
 
     rprint(f"[*] {len(keywords)} unique service(s) detected:\n")
     for kw in keywords:
         rprint(f"    [cyan]\u2022[/cyan] {kw['keyword']} ({kw['port']}) — {', '.join(kw['ips'])}")
     rprint()
 
-    # Step 3: Query NVD
-    all_matches: list[dict] = []
-
+    # Query NVD and retain whether each match is version-qualified.
     for i, kw in enumerate(keywords):
         cpe_name = build_cpe_name(kw["product"], kw["version"])
+        kw["match_type"] = "cpe" if cpe_name else "candidate"
         mode_tag = "CPE" if cpe_name else "keyword"
         rprint(
             f"[bold cyan][\u2026][/bold cyan] Querying NVD ({mode_tag}): "
@@ -635,12 +684,19 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
 
         cves = query_nvd(kw["keyword"], days_back=days_back, cpe_name=cpe_name)
 
-        if not cves:
+        if cves == []:
             # Try with just the product name (without version, via keyword)
             if kw["version"]:
                 rprint(f"  [dim]Retrying with keyword: {kw['product']}[/dim]")
                 time.sleep(_REQUEST_DELAY)
                 cves = query_nvd(kw["product"], days_back=days_back)
+                kw["match_type"] = "candidate"
+
+        if cves is None:
+            all_matches.failed_queries.append(kw["keyword"])
+            if i < len(keywords) - 1:
+                time.sleep(_REQUEST_DELAY)
+            continue
 
         for cve in cves:
             impact = generate_impact_summary(cve, kw, kw["ips"])
@@ -653,6 +709,7 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
                 "ips":      kw["ips"],
                 "impact":   impact,
                 "description": cve["description"],
+                "match_type": kw["match_type"],
             }
             all_matches.append(match)
 
@@ -673,18 +730,21 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> list[di
         if i < len(keywords) - 1:
             time.sleep(_REQUEST_DELAY)
 
-    # Step 4: Sort by severity/score (critical first)
+    # Present the most urgent matches first.
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
     all_matches.sort(key=lambda m: (severity_order.get(m["severity"], 5), -(m["score"] or 0)))
 
-    # Step 5: Display + notify
-    display_cve_table(all_matches)
+    # Render the result and notify configured channels.
+    display_cve_table(all_matches, complete=all_matches.complete)
+    if not all_matches.complete:
+        rprint(f"[yellow]Incomplete analysis: {len(all_matches.failed_queries)} service query/queries failed.[/yellow]")
 
     if all_matches:
         critical_count = sum(1 for m in all_matches if m["severity"] in ("CRITICAL", "HIGH"))
         send_alert(
             title="CVE-Watcher Alert",
-            local_msg=f"{len(all_matches)} CVEs found ({critical_count} critical/high) on {network}",
+            local_msg=f"{len(all_matches)} CVE matches ({critical_count} critical/high) on {network}; "
+                      f"{'complete' if all_matches.complete else 'incomplete'} analysis",
             telegram_msg=_build_telegram_report(all_matches, network),
         )
 

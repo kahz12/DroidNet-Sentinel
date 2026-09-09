@@ -168,15 +168,25 @@ def init_db() -> None:
 
 def _hosts_for_scan(c: sqlite3.Connection, scan_id: int) -> dict[str, list[str]]:
     """Return {ip: [port_entries]} for a given scan_id (reuses open connection)."""
-    rows = c.execute(
-        "SELECT id, ip FROM hosts WHERE scan_id = ?", (scan_id,)
-    ).fetchall()
-    result: dict[str, list[str]] = {}
-    for row in rows:
-        ports = c.execute(
-            "SELECT port_entry FROM ports WHERE host_id = ?", (row["id"],)
-        ).fetchall()
-        result[row["ip"]] = [p["port_entry"] for p in ports]
+    return _hosts_for_scans(c, [scan_id])[scan_id]
+
+
+def _hosts_for_scans(c: sqlite3.Connection, scan_ids) -> dict[int, dict[str, list[str]]]:
+    """Batch-load snapshots, including hosts without ports, in bounded chunks."""
+    ids = list(dict.fromkeys(scan_ids))
+    result = {scan_id: {} for scan_id in ids}
+    for start in range(0, len(ids), 400):
+        chunk = ids[start:start + 400]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = c.execute(f"""
+            SELECT h.scan_id, h.ip, p.port_entry
+            FROM hosts h LEFT JOIN ports p ON p.host_id = h.id
+            WHERE h.scan_id IN ({placeholders}) ORDER BY h.id, p.id
+        """, chunk)
+        for row in rows:
+            ports = result[row["scan_id"]].setdefault(row["ip"], [])
+            if row["port_entry"] is not None:
+                ports.append(row["port_entry"])
     return result
 
 
@@ -247,14 +257,17 @@ def save_scan(network: str, scan_time: str, targets: dict) -> int:
 #  Read
 # ══════════════════════════════════════════════════════════════════
 
-def get_all_scans() -> list[dict]:
-    """Return all scans with their targets populated, newest first."""
+def get_all_scans(limit: int | None = None, offset: int = 0) -> list[dict]:
+    """Return scans with targets, newest first; optionally paginate."""
     with _conn() as c:
-        scans = c.execute("SELECT * FROM scans ORDER BY id DESC").fetchall()
+        c.execute("BEGIN")
+        scans = c.execute("SELECT * FROM scans ORDER BY id DESC LIMIT ? OFFSET ?",
+                          (-1 if limit is None else int(limit), max(0, int(offset)))).fetchall()
+        targets = _hosts_for_scans(c, [scan["id"] for scan in scans])
         result = []
         for scan in scans:
             d = dict(scan)
-            d["targets"] = _hosts_for_scan(c, d["id"])
+            d["targets"] = targets[d["id"]]
             result.append(d)
     return result
 
@@ -285,28 +298,25 @@ def get_all_scans_with_diffs(
         risks        : {ip: plain-text risk label}
     """
     with _conn() as c:
-        if limit is None:
-            scans = c.execute("SELECT * FROM scans ORDER BY id DESC").fetchall()
-        else:
-            scans = c.execute(
-                "SELECT * FROM scans ORDER BY id DESC LIMIT ? OFFSET ?",
-                (int(limit), int(offset)),
-            ).fetchall()
+        c.execute("BEGIN")
+        scans = c.execute("""
+            SELECT s.*, (SELECT p.id FROM scans p
+                         WHERE p.network = s.network AND p.id < s.id
+                         ORDER BY p.id DESC LIMIT 1) AS previous_id
+            FROM scans s ORDER BY s.id DESC LIMIT ? OFFSET ?
+        """, (-1 if limit is None else int(limit), max(0, int(offset)))).fetchall()
+        ids = {row["id"] for row in scans} | {row["previous_id"] for row in scans if row["previous_id"] is not None}
+        targets = _hosts_for_scans(c, ids)
         result = []
 
         for scan in scans:
             d = dict(scan)
-            d["targets"] = _hosts_for_scan(c, d["id"])
+            d["targets"] = targets[d["id"]]
             d["risks"]   = {ip: classify_risk(p) for ip, p in d["targets"].items()}
 
-            prev = c.execute("""
-                SELECT id FROM scans
-                WHERE network = ? AND id < ?
-                ORDER BY id DESC LIMIT 1
-            """, (d["network"], d["id"])).fetchone()
-
-            if prev:
-                prev_targets = _hosts_for_scan(c, prev["id"])
+            prev_id = d.pop("previous_id")
+            if prev_id is not None:
+                prev_targets = targets[prev_id]
                 d["new_ips"], d["gone_ips"], d["port_changes"] = _compute_diff(
                     d["targets"], prev_targets
                 )

@@ -18,7 +18,7 @@ Routes:
     GET  /logout             → end session
     GET  /                   → HTML dashboard          (auth required)
     GET  /help               → in-app help / user guide (auth required)
-    GET  /api/reports        → raw JSON, all scans     (auth required)
+    GET  /api/reports        → paginated scan JSON     (auth required)
     GET  /api/scan/<id>/diff → diff JSON for one scan  (auth required)
 
 Data source:
@@ -236,7 +236,7 @@ def _csrf_ok(form_token: str) -> bool:
     expected = session.get("_csrf_token", "")
     if not expected or not form_token:
         return False
-    return hmac.compare_digest(form_token, expected)
+    return hmac.compare_digest(form_token.encode("utf-8"), expected.encode("utf-8"))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -245,8 +245,8 @@ def _csrf_ok(form_token: str) -> bool:
 
 def _check_credentials(username: str, password: str) -> bool:
     """Constant-time credential comparison to prevent timing attacks."""
-    ok_user = hmac.compare_digest(username, _USER)
-    ok_pass = hmac.compare_digest(password, _PASS)
+    ok_user = hmac.compare_digest(username.encode("utf-8"), _USER.encode("utf-8"))
+    ok_pass = hmac.compare_digest(password.encode("utf-8"), _PASS.encode("utf-8"))
     return ok_user and ok_pass
 
 
@@ -773,12 +773,15 @@ _DASHBOARD_TEMPLATE = """
                                 {% if risk == 'CRITICAL' %}r-critical
                                 {% elif risk == 'MEDIUM'  %}r-medium
                                 {% elif risk == 'LOW'   %}r-low
-                                {% else %}r-minimal{% endif %}">{{ risk }}</span>
+                                {% elif risk == 'MINIMAL' %}r-minimal
+                                {% else %}r-medium{% endif %}">{{ risk }}</span>
                         </div>
 
                         <div class="ports">
                         {% for port in ports %}
-                            {% if is_vuln %}
+                            {% if risk == 'UNKNOWN' %}
+                                <span>? {{ port }}</span>
+                            {% elif is_vuln %}
                                 <span class="bad-line">! {{ port }}</span>
                             {% else %}
                                 <span class="ok-line">+ {{ port }}</span>
@@ -1087,6 +1090,12 @@ _HELP_TEMPLATE = """
                             <td>No open ports</td>
                             <td>Host is reachable but exposes no services.</td>
                         </tr>
+                        <tr>
+                            <td><span class="pill r-medium">UNKNOWN</span></td>
+                            <td>Failed or inconclusive scan</td>
+                            <td>The host could not be assessed. Retry before
+                                drawing conclusions about its exposure.</td>
+                        </tr>
                     </table>
                 </section>
 
@@ -1095,8 +1104,9 @@ _HELP_TEMPLATE = """
                     <p>All endpoints require an authenticated session and
                        return JSON. Useful for piping into your own tooling.</p>
                     <ul>
-                        <li><code>GET /api/reports</code> — every scan stored
-                            in the database.</li>
+                        <li><code>GET /api/reports?page=1&amp;per_page=20</code> —
+                            a page of scans (maximum 100). Follow the response's
+                            next-page Link header to retrieve more.</li>
                         <li><code>GET /api/scan/&lt;id&gt;/diff</code> — diff
                             of one scan against the previous scan of the same
                             network.</li>
@@ -1279,8 +1289,25 @@ def help_page():
 @app.route("/api/reports")
 @login_required
 def api_reports():
-    """Return all scans as raw JSON (for external integrations)."""
-    return jsonify(get_all_scans())
+    """Return a bounded page; keep the JSON array shape for integrations."""
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = max(1, min(int(request.args.get("per_page", _DEFAULT_PAGE_SIZE)), _MAX_PAGE_SIZE))
+    except (TypeError, ValueError):
+        abort(400, description="page and per_page must be integers")
+    total = count_scans()
+    pages = max(1, (total + per_page - 1) // per_page)
+    if page > pages:
+        data = []
+    else:
+        data = get_all_scans(limit=per_page, offset=(page - 1) * per_page)
+    response = jsonify(data)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page"] = str(page)
+    response.headers["X-Per-Page"] = str(per_page)
+    if page < pages:
+        response.headers["Link"] = f'<{url_for("api_reports", page=page + 1, per_page=per_page)}>; rel="next"'
+    return response
 
 
 @app.route("/api/scan/<int:scan_id>/diff")

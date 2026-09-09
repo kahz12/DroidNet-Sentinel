@@ -75,7 +75,7 @@ def clean_service_name(raw_service: str) -> str | None:
     return query or None
 
 
-def _hunt_exploits_local(query: str) -> list[dict]:
+def _hunt_exploits_local(query: str) -> list[dict] | None:
     """Consulta searchsploit local. Devuelve lista de dicts de exploits."""
     try:
         proc = subprocess.run(
@@ -86,21 +86,22 @@ def _hunt_exploits_local(query: str) -> list[dict]:
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         rprint(f"[red]Error querying local Exploit-DB: {exc}[/red]")
-        return []
+        return None
 
     if proc.returncode != 0 or not proc.stdout:
-        return []
+        return None
 
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         rprint(f"[yellow]searchsploit returned non-JSON output for '{query}': {exc}[/yellow]")
-        return []
+        return None
 
-    return data.get("RESULTS_EXPLOIT", [])
+    results = data.get("RESULTS_EXPLOIT") if isinstance(data, dict) else None
+    return results if isinstance(results, list) and all(isinstance(item, dict) for item in results) else None
 
 
-def _hunt_exploits_online(query: str) -> list[dict]:
+def _hunt_exploits_online(query: str) -> list[dict] | None:
     """
     Online fallback via the public Vulners API (no API key, rate-limited).
 
@@ -118,10 +119,16 @@ def _hunt_exploits_online(query: str) -> list[dict]:
         payload = resp.json()
     except (requests.RequestException, ValueError) as exc:
         rprint(f"[yellow]Online fallback failed for '{query}': {exc}[/yellow]")
-        return []
+        return None
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get("search"), list):
+        return None
 
     results: list[dict] = []
-    for item in payload.get("data", {}).get("search", []):
+    for item in data["search"]:
+        if not isinstance(item, dict) or not isinstance(item.get("_source"), dict):
+            return None
         src = item.get("_source", {})
         published = (src.get("published") or "")[:10]
         results.append({
@@ -132,7 +139,7 @@ def _hunt_exploits_online(query: str) -> list[dict]:
     return results
 
 
-def hunt_exploits(query: str) -> list[dict]:
+def hunt_exploits(query: str) -> list[dict] | None:
     """
     Run an exploit search for *query* and return results ordered
     by descending publication date (most recent first).
@@ -148,6 +155,8 @@ def hunt_exploits(query: str) -> list[dict]:
     else:
         results = _hunt_exploits_online(query)
 
+    if results is None:
+        return None  # Transient failures must be retried, never cached.
     # Descending order by Date_Published; entries without a date go last.
     results.sort(key=lambda ex: ex.get("Date_Published") or "", reverse=True)
 
@@ -162,6 +171,7 @@ def run_hunter() -> None:
     Loads the latest Sentinel report, iterates over each scanned host
     and service, queries Exploit-DB, and prints results to the terminal.
     """
+    _EXPLOIT_CACHE.clear()
     rprint("[bold red][☠][/bold red] Starting DroidNet Hunter module...")
 
     if not _searchsploit_path():
@@ -177,8 +187,14 @@ def run_hunter() -> None:
 
     rprint(f"[*] Loading latest scan: [bold white]{latest}[/bold white]")
 
-    with open(latest) as fh:
-        data = json.load(fh)
+    try:
+        with open(latest) as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or not isinstance(data.get("targets"), dict):
+            raise ValueError("invalid report structure")
+    except (OSError, ValueError) as exc:
+        rprint(f"[yellow]Could not load report: {exc}[/yellow]")
+        return
 
     for ip, services in data.get("targets", {}).items():
         if "Shield intact" in services or (services and "Error" in services[0]):
@@ -211,6 +227,8 @@ def run_hunter() -> None:
 
                 if len(exploits) > 5:
                     rprint(f"  [dim]... and {len(exploits) - 5} more exploits hidden.[/dim]")
+            elif exploits is None:
+                rprint("[yellow]Exploit lookup failed; result unknown.[/yellow]")
             else:
                 rprint("  [dim][-] No verified public exploits.[/dim]")
 

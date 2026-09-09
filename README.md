@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Linux-green)
-![Tests](https://img.shields.io/badge/Tests-78%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-pytest-blue)
 
 > Autonomous Wi-Fi network auditor for Android (Termux) and Linux.
 > Powered by Nmap, Python and Flask.
@@ -46,7 +46,7 @@ Command Center.
 |---|---|
 | **Discovery**       | ARP ping sweep on the local /24 (`nmap -sn`) |
 | **Deep scan**       | Top 100 TCP ports + version detection (`-F -sV -T4`) |
-| **Risk engine**     | Per-host classification: MINIMAL / LOW / MEDIUM / CRITICAL |
+| **Risk engine**     | Per-host classification: MINIMAL / LOW / MEDIUM / CRITICAL / UNKNOWN |
 | **Diff history**    | Tracks new hosts, disappeared hosts, port changes between scans |
 | **Exploit lookup**  | Local Exploit-DB search via `searchsploit` |
 | **CVE monitoring**  | NVD cross-reference with impact analysis |
@@ -163,12 +163,28 @@ Add `--help` to any subcommand for its full flag set.
 Daemon mode loops every 5 minutes and re-scans whenever the SSID
 changes or 6 hours have elapsed.
 
+Discovery and service results use Nmap's [XML output](https://nmap.org/book/output-formats-xml-output.html).
+Completed scans with zero hosts are saved so the dashboard can show
+disappeared devices. Failed discoveries are retried on the next cycle;
+failed, unreachable or inconclusive host scans have risk `UNKNOWN`.
+
+`Ctrl+C` stops the daemon and cleans up automatic ARP responses. The same
+host is not given duplicate response jobs; changes to the network or trust
+list revoke obsolete jobs. A one-shot scan with `--auto-cut` waits for
+`Ctrl+C` while responses are active. Restoration is attempted on exit;
+its success still depends on the network and operating system.
+On interruption, queued scans are cancelled; any Nmap commands already
+running finish or hit their 120-second timeout before shutdown completes.
+
 ### Hunter — exploit lookup
 `droidnet/modules/hunter.py`
 
 Parses the latest scan, extracts product names from Nmap version
 strings, and queries the local Exploit-DB via `searchsploit --json`.
 Shows up to 5 matches per service.
+
+Lookup results are cached only for the current Hunter run. Failed lookups
+remain distinguishable from successful searches with no matches.
 
 ### CVE Watcher
 `droidnet/modules/cve_watcher.py`
@@ -178,6 +194,13 @@ NVD for CVEs published in the last 120 days, classifies the attack
 vector (RCE, DoS, privilege escalation, auth bypass, info disclosure),
 and stores deduplicated alerts in `cve_alerts`. Set `NVD_API_KEY` for
 higher rate limits.
+
+Queries paginate through all results and use an exact publication window
+of 1–120 days. Failed queries produce an explicit incomplete analysis,
+not a clean result. Keyword matches are labelled **candidates** until
+the affected versions are verified; their applicability is not established
+by matching the product name alone. Publication-window filtering does not
+cover all older vulnerabilities.
 
 ### Dashboard — Command Center
 `droidnet/web/dashboard.py`
@@ -192,15 +215,15 @@ constant-time. Auto-generated passwords are written to
 | `/login`, `/logout`         | Session auth |
 | `/`                         | Dashboard — scan cards, summary tiles, diff view |
 | `/help`                     | Built-in user guide |
-| `/api/reports`              | Every scan as JSON |
+| `/api/reports`              | Paginated scan JSON (array) |
 | `/api/scan/<id>/diff`       | Diff for one scan vs the previous one |
 
 ### Spoofer — ARP MitM
 `droidnet/modules/spoofer.py`
 
-Bidirectional ARP poisoning via `arpspoof`. Two daemon threads forge
-replies to the victim and the gateway; legitimate ARP entries are
-restored on `Ctrl+C`. **Linux only**, requires root.
+Bidirectional ARP poisoning via two managed `arpspoof` processes, with
+a Scapy fallback when available. Processes are cleaned up on `Ctrl+C`
+or startup failure. Requires root and suitable socket permissions.
 
 ### Deauther — 802.11 deauth
 `droidnet/modules/deauther.py`
@@ -229,7 +252,7 @@ Optional file at the project root:
 | Field | Description |
 |---|---|
 | `excluded_ips`      | IPs skipped by Nmap (typically your own device) |
-| `trusted_ips`       | Known hosts. Anything else may trigger an ARP cut |
+| `trusted_ips`       | Trusted IPs or CIDR ranges; self and gateway are also protected |
 | `db_retention_days` | Used by `db purge` (default `90`) |
 
 The file is schema-validated at load: unexpected types fall back to
@@ -280,13 +303,21 @@ hosts       id, scan_id -> scans.id, ip, risk
 ports       id, host_id -> hosts.id, port_entry
 cve_alerts  id, cve_id, severity, score, service, ip, summary,
             impact, network, scan_id -> scans.id, created_at
-            UNIQUE(cve_id, ip, service)
+            UNIQUE(cve_id, ip, service, network)
 ```
 
 `get_all_scans_with_diffs()` enriches each record with `new_ips`,
 `gone_ips` and `port_changes` against the previous scan of the same
 network. JSON files under `reports/` are written in parallel for
 portability.
+
+The dashboard batch-loads hosts and ports. `/api/reports?page=1&per_page=20`
+returns at most 20 scans by default, with a maximum page size of 100.
+The JSON body remains an array; `X-Total-Count`, `X-Page`, `X-Per-Page`
+and the `Link` header describe pagination. Integrations that previously
+fetched the entire history in one request must follow the next-page link.
+The Python `get_all_scans()` API still supports unbounded exports, and
+the documented `get_known_ips(network)` API is retained for compatibility.
 
 ---
 
@@ -300,6 +331,7 @@ Hosts are scored from the set of open TCP ports they expose:
 | MEDIUM   | HTTP (80, 8080), DNS (53), SSDP (1900), NFS (2049)| yellow |
 | LOW      | Any other open port                               | blue   |
 | MINIMAL  | No open ports                                     | green  |
+| UNKNOWN  | Failed, unreachable or inconclusive scan           | yellow |
 
 The dashboard shows the same legend inline plus a "What does this
 mean?" link to `/help`.
@@ -328,6 +360,21 @@ skipped.
 - All `subprocess` calls take list arguments (no `shell=True`) and TLS
   verification is never disabled. These invariants are enforced by
   AST-based regression tests in `tests/test_security_invariants.py`.
+
+## Development checks
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+python -m ruff check droidnet main.py tests --select F,E9,B
+python -m vulture droidnet main.py --min-confidence 80
+```
+
+Tests simulate scanning, packet transmission, interface changes and
+external API requests. Database tests use temporary files. Real Wi-Fi
+hardware and external-service integration require separate validation.
+Scapy may be unavailable in restricted environments; operational modules
+report this without preventing unrelated imports or tests.
 - Spoofer and Deauther are offensive primitives. Run them only against
   targets you own or are authorised to test.
 
