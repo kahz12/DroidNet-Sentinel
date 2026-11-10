@@ -30,6 +30,7 @@ from droidnet.config       import (
 )
 from droidnet.core.database  import init_db, save_scan, purge_old_scans
 from droidnet.core.logger    import get_logger
+from droidnet.core.markup    import esc
 from droidnet.core.risk      import classify_risk
 from droidnet.core.notifier  import send_alert, escape_markdown
 from droidnet.platform.utils import get_default_iface, get_default_gateway, get_wifi_info
@@ -57,7 +58,7 @@ _RISK_MARKUP = {
 def evaluate_risk(ports: list[str]) -> str:
     """Return the Rich-markup version of classify_risk(ports)."""
     label = classify_risk(ports)
-    return _RISK_MARKUP.get(label, label)
+    return _RISK_MARKUP.get(label, esc(label))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -81,7 +82,7 @@ def display_results_table(
     metadata = metadata or {}
 
     table = Table(
-        title        = f"[bold cyan]Sentinel audit: {ssid}[/bold cyan]",
+        title        = f"[bold cyan]Sentinel audit: {esc(ssid)}[/bold cyan]",
         show_header  = True,
         header_style = "bold magenta",
     )
@@ -94,24 +95,27 @@ def display_results_table(
 
     for ip, results in scan_data.items():
         meta     = metadata.get(ip, {})
-        hostname = meta.get("hostname") or "—"
-        vendor   = meta.get("vendor")   or "—"
+        # Hostname (DHCP / mDNS), vendor and banners are set by the devices
+        # themselves; table cells are parsed as markup, so escape them.
+        ip_cell  = esc(ip)
+        hostname = esc(meta.get("hostname") or "—")
+        vendor   = esc(meta.get("vendor")   or "—")
         risk     = evaluate_risk(results)
 
         if results == ["Shield intact"]:
             table.add_row(
-                ip, hostname, vendor, risk,
+                ip_cell, hostname, vendor, risk,
                 "[blue]Closed[/blue]", "Protected device",
             )
         elif results and "Error" in results[0]:
             table.add_row(
-                ip, hostname, vendor, "[white]???[/white]",
+                ip_cell, hostname, vendor, "[white]???[/white]",
                 "[red]Failed[/red]", "Scan error",
             )
         else:
             ports    = "\n".join(p.split()[0]           for p in results)
             services = "\n".join(" ".join(p.split()[2:]) for p in results)
-            table.add_row(ip, hostname, vendor, risk, ports, services)
+            table.add_row(ip_cell, hostname, vendor, risk, esc(ports), esc(services))
 
     console.print("\n", table, "\n")
 
@@ -462,7 +466,7 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
             )
 
             if should_scan and my_ip and my_ip != "0.0.0.0":
-                rprint(f"\n[bold green][*][/bold green] Scan en curso: [bold white]{current_ssid}[/bold white]")
+                rprint(f"\n[bold green][*][/bold green] Scan en curso: [bold white]{esc(current_ssid)}[/bold white]")
                 log.info("scan started network=%s my_ip=%s auto_cut=%s",
                          current_ssid, my_ip, auto_cut)
 

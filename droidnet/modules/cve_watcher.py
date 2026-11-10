@@ -38,6 +38,7 @@ from droidnet.core.database import (
     get_cve_alerts,
 )
 from droidnet.core.logger import get_logger
+from droidnet.core.markup import esc
 from droidnet.core.notifier import send_alert, escape_markdown
 
 log = get_logger(__name__)
@@ -75,7 +76,9 @@ _PRODUCT_TO_CPE: dict[str, str] = {
     "openssh":              "openbsd:openssh",
     "microsoft iis":        "microsoft:internet_information_services",
     "iis":                  "microsoft:internet_information_services",
-    "mysql":                "mysql:mysql",
+    # NVD files MySQL under Oracle (oracle:mysql:8.0.36 has 73 CVEs,
+    # mysql:mysql:8.0.36 has 2 and no dictionary entry).
+    "mysql":                "oracle:mysql",
     "mariadb":              "mariadb:mariadb",
     "postgresql":           "postgresql:postgresql",
     "vsftpd":               "vsftpd_project:vsftpd",
@@ -96,6 +99,34 @@ _PRODUCT_TO_CPE: dict[str, str] = {
     "elasticsearch":        "elastic:elasticsearch",
 }
 
+# Generic role words nmap appends to product names ("PostgreSQL DB",
+# "Microsoft IIS httpd", "Redis key-value store"). One trailing word is
+# stripped to retry the exact lookup. Never prefix-match instead: "Apache
+# Tomcat", "Elasticsearch Kibana" or "Dovecot Pigeonhole sieve" are other
+# products and would silently borrow the wrong CPE.
+_NMAP_ROLE_SUFFIXES = (
+    "key-value store", "rest api",
+    "httpd", "smtpd", "imapd", "pop3d", "ftpd", "sshd", "smbd", "db",
+)
+
+# Products whose NVD CPE names keep the release suffix in the *update*
+# field (dictionary: openssh 9.6:p1, proftpd 1.3.5:a). Sending "8.2p1" as
+# the version misses every CVE that lists the exact version (e.g.
+# CVE-2020-12062 → openssh:8.2:*), keeping only range-based matches.
+_UPDATE_SUFFIX_PRODUCTS = {"openbsd:openssh", "proftpd:proftpd"}
+_VERSION_UPDATE_RE = re.compile(r"(\d+(?:\.\d+)+)([a-z]+\d*)", re.IGNORECASE)
+
+
+def _lookup_vendor_product(product: str) -> str | None:
+    """Map an nmap product string to "vendor:product", or None if unknown."""
+    key = " ".join(product.lower().split())
+    if key in _PRODUCT_TO_CPE:
+        return _PRODUCT_TO_CPE[key]
+    for suffix in _NMAP_ROLE_SUFFIXES:
+        if key.endswith(" " + suffix):
+            return _PRODUCT_TO_CPE.get(key[: -len(suffix) - 1])
+    return None
+
 
 def build_cpe_name(product: str, version: str) -> str | None:
     """
@@ -108,12 +139,17 @@ def build_cpe_name(product: str, version: str) -> str | None:
     if not version:
         return None
 
-    key = product.strip().lower()
-    vendor_product = _PRODUCT_TO_CPE.get(key)
+    vendor_product = _lookup_vendor_product(product)
     if not vendor_product:
         return None
 
-    return f"cpe:2.3:a:{vendor_product}:{version}:*:*:*:*:*:*:*"
+    update = "*"
+    if vendor_product in _UPDATE_SUFFIX_PRODUCTS:
+        split = _VERSION_UPDATE_RE.fullmatch(version)
+        if split:
+            version, update = split.group(1), split.group(2).lower()
+
+    return f"cpe:2.3:a:{vendor_product}:{version}:{update}:*:*:*:*:*:*"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -248,14 +284,14 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
         try:
             resp = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
         except requests.RequestException as exc:
-            rprint(f"[red]  [✗] NVD network error ({query_label}): {exc}[/red]")
+            rprint(f"[red]  [✗] NVD network error ({esc(query_label)}): {esc(exc)}[/red]")
             return None
 
         if resp.status_code == 200:
             try:
                 return resp.json()
             except ValueError as exc:
-                rprint(f"[red]  [✗] NVD returned invalid JSON ({query_label}): {exc}[/red]")
+                rprint(f"[red]  [✗] NVD returned invalid JSON ({esc(query_label)}): {esc(exc)}[/red]")
                 return None
 
         if resp.status_code in (429, 403):
@@ -265,7 +301,7 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
             else:
                 delay = min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
             rprint(
-                f"[yellow]  [-] NVD {resp.status_code} ({query_label}); "
+                f"[yellow]  [-] NVD {resp.status_code} ({esc(query_label)}); "
                 f"backoff {delay:.1f}s (attempt {attempt + 1}/{_BACKOFF_MAX_RETRIES})[/yellow]"
             )
             log.warning("nvd backoff status=%s query=%s delay=%.1fs attempt=%d",
@@ -274,10 +310,10 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
             continue
 
         # Other codes: do not retry.
-        rprint(f"[dim]  [-] NVD responded {resp.status_code} for '{query_label}'[/dim]")
+        rprint(f"[dim]  [-] NVD responded {resp.status_code} for '{esc(query_label)}'[/dim]")
         return None
 
-    rprint(f"[red]  [✗] NVD: retries exhausted for '{query_label}'[/red]")
+    rprint(f"[red]  [✗] NVD: retries exhausted for '{esc(query_label)}'[/red]")
     return None
 
 
@@ -374,7 +410,7 @@ def query_nvd(
 
     cached = _cache_load(cache_key)
     if cached is not None:
-        rprint(f"[dim]  [cache] {query_label}[/dim]")
+        rprint(f"[dim]  \\[cache] {esc(query_label)}[/dim]")
         log.debug("nvd cache hit query=%s", query_label)
         return cached
     log.debug("nvd cache miss query=%s", query_label)
@@ -404,19 +440,62 @@ def query_nvd(
     return results
 
 
-def _extract_cvss(cve: dict) -> tuple[float | None, str]:
-    """Extract the best available CVSS score and severity from a CVE entry."""
-    metrics = cve.get("metrics", {})
+# Metric blocks in order of preference. CVSS 3.x stays first so scores of
+# CVEs that have it do not change; CVSS 4.0 is often the only score a CNA
+# supplies on a fresh CVE (~10% of new CVEs), and v2 is legacy.
+_CVSS_METRIC_KEYS = ("cvssMetricV31", "cvssMetricV30", "cvssMetricV40", "cvssMetricV2")
+_CVSS_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"}
 
-    # Try CVSS 3.1 first, then 3.0, then 2.0
-    for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-        metric_list = metrics.get(key, [])
-        if metric_list:
-            cvss_data = metric_list[0].get("cvssData", {})
-            score = cvss_data.get("baseScore")
-            severity = cvss_data.get("baseSeverity", "UNKNOWN")
+
+def _severity_from_score(score: float, legacy_v2: bool) -> str:
+    """Qualitative band for *score* when NVD omits baseSeverity."""
+    if legacy_v2:  # CVSS v2 has no CRITICAL or NONE bands.
+        return "HIGH" if score >= 7.0 else "MEDIUM" if score >= 4.0 else "LOW"
+    if score >= 9.0:
+        return "CRITICAL"
+    if score >= 7.0:
+        return "HIGH"
+    if score >= 4.0:
+        return "MEDIUM"
+    return "LOW" if score > 0 else "NONE"
+
+
+def _metric_score(entry, legacy_v2: bool) -> tuple[float | None, str]:
+    """Score and severity of one metric entry; (None, ...) if unusable."""
+    data = entry.get("cvssData") if isinstance(entry, dict) else None
+    if not isinstance(data, dict):
+        return None, "UNKNOWN"
+    score = data.get("baseScore")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 10:
+        return None, "UNKNOWN"
+    # v3.x / v4.0 keep baseSeverity inside cvssData; v2 keeps it beside it.
+    severity = (entry if legacy_v2 else data).get("baseSeverity")
+    if isinstance(severity, str) and severity.upper() in _CVSS_SEVERITIES:
+        return float(score), severity.upper()
+    return float(score), _severity_from_score(score, legacy_v2)
+
+
+def _extract_cvss(cve: dict) -> tuple[float | None, str]:
+    """Extract the best available CVSS score and severity from a CVE entry.
+
+    Malformed blocks are skipped rather than raising, so one bad record
+    cannot abort the whole run.
+    """
+    metrics = cve.get("metrics")
+    if not isinstance(metrics, dict):
+        return None, "UNKNOWN"
+
+    for key in _CVSS_METRIC_KEYS:
+        entries = metrics.get(key)
+        if not isinstance(entries, list):
+            continue
+        # NVD's own analysis ("Primary") beats a CNA's ("Secondary");
+        # sorted() is stable, so the original order breaks ties.
+        entries = sorted(entries, key=lambda e: not (isinstance(e, dict) and e.get("type") == "Primary"))
+        for entry in entries:
+            score, severity = _metric_score(entry, legacy_v2=(key == "cvssMetricV2"))
             if score is not None:
-                return score, severity.upper()
+                return score, severity
 
     return None, "UNKNOWN"
 
@@ -529,20 +608,21 @@ def display_cve_table(matches: list[dict], complete: bool = True) -> None:
     table.add_column("Impact",    style="yellow")
 
     for m in matches:
-        sev_display = _SEVERITY_ICONS.get(m["severity"], m["severity"])
+        sev_display = _SEVERITY_ICONS.get(m["severity"], esc(m["severity"]))
         score_str = f"{m['score']:.1f}" if m["score"] else "—"
         ips_str = ", ".join(m["ips"][:3])
         if len(m["ips"]) > 3:
             ips_str += f" +{len(m['ips']) - 3}"
 
+        # Table cells are parsed as markup too: escape every external field.
         table.add_row(
-            m["cve_id"],
+            esc(m["cve_id"]),
             "Candidate" if m.get("match_type") == "candidate" else "CPE",
             sev_display,
             score_str,
-            m["service"],
-            ips_str,
-            m["impact"],
+            esc(m["service"]),
+            esc(ips_str),
+            esc(m["impact"]),
         )
 
     console.print("\n", table, "\n")
@@ -567,8 +647,9 @@ def display_alerts_history(alerts: list[dict]) -> None:
     table.add_column("Date",      style="dim")
 
     for a in alerts:
-        sev = _SEVERITY_ICONS.get(a["severity"], a["severity"])
-        table.add_row(a["cve_id"], sev, a["service"], a["ip"], a["network"], a["created_at"])
+        sev = _SEVERITY_ICONS.get(a["severity"], esc(a["severity"]))
+        table.add_row(esc(a["cve_id"]), sev, esc(a["service"]), esc(a["ip"]),
+                      esc(a["network"]), esc(a["created_at"]))
 
     console.print("\n", table, "\n")
 
@@ -659,7 +740,7 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> CVEWatc
 
     network = scan["network"]
     scan_id = scan["id"]
-    rprint(f"[*] Analysing scan from [bold white]{network}[/bold white] (ID: {scan_id})")
+    rprint(f"[*] Analysing scan from [bold white]{esc(network)}[/bold white] (ID: {scan_id})")
 
     # Normalize banners into deduplicated service queries.
     keywords = build_search_keywords(scan["targets"])
@@ -669,7 +750,8 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> CVEWatc
 
     rprint(f"[*] {len(keywords)} unique service(s) detected:\n")
     for kw in keywords:
-        rprint(f"    [cyan]\u2022[/cyan] {kw['keyword']} ({kw['port']}) — {', '.join(kw['ips'])}")
+        rprint(f"    [cyan]\u2022[/cyan] {esc(kw['keyword'])} ({esc(kw['port'])}) — "
+               f"{esc(', '.join(kw['ips']))}")
     rprint()
 
     # Query NVD and retain whether each match is version-qualified.
@@ -679,7 +761,7 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> CVEWatc
         mode_tag = "CPE" if cpe_name else "keyword"
         rprint(
             f"[bold cyan][\u2026][/bold cyan] Querying NVD ({mode_tag}): "
-            f"[yellow]{cpe_name or kw['keyword']}[/yellow]"
+            f"[yellow]{esc(cpe_name or kw['keyword'])}[/yellow]"
         )
 
         cves = query_nvd(kw["keyword"], days_back=days_back, cpe_name=cpe_name)
@@ -687,7 +769,7 @@ def run_cve_watcher(days_back: int = 120, show_history: bool = False) -> CVEWatc
         if cves == []:
             # Try with just the product name (without version, via keyword)
             if kw["version"]:
-                rprint(f"  [dim]Retrying with keyword: {kw['product']}[/dim]")
+                rprint(f"  [dim]Retrying with keyword: {esc(kw['product'])}[/dim]")
                 time.sleep(_REQUEST_DELAY)
                 cves = query_nvd(kw["product"], days_back=days_back)
                 kw["match_type"] = "candidate"

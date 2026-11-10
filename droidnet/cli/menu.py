@@ -19,6 +19,7 @@ from rich.text      import Text
 from droidnet           import __version__
 from droidnet.config    import REPORTS_DIR
 from droidnet.core.logger import get_logger
+from droidnet.core.markup import esc
 from droidnet.platform.utils import check_root, get_default_iface
 
 log = get_logger(__name__)
@@ -440,10 +441,12 @@ def list_reports() -> None:
             except (ValueError, TypeError) as exc:
                 log.debug("report %s: unparseable time %r (%s)", path.name, ts, exc)
             hosts = str(len(data.get("targets", {})))
-            table.add_row(str(i), data.get("network", "?"), ts, hosts, path.name)
+            # Report contents and file names derive from SSIDs: render literally.
+            table.add_row(str(i), esc(data.get("network", "?")), esc(ts), hosts,
+                          esc(path.name))
         except Exception as exc:
             log.debug("report %s: could not read (%s)", path.name, exc)
-            table.add_row(str(i), "?", "?", "?", path.name)
+            table.add_row(str(i), "?", "?", "?", esc(path.name))
 
     console.print("\n", table, "\n")
 

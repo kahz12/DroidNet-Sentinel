@@ -97,3 +97,45 @@ def test_unicode_login_and_invalid_csrf(monkeypatch):
     assert response.status_code == 302
     with client.session_transaction() as session:
         assert session["authenticated"] is True
+
+
+# On POSIX, os.environ decodes non-UTF-8 bytes with surrogateescape, so a
+# binary SENTINEL_PASS arrives as a str holding lone surrogates.
+_BINARY_PASS = b"\xff\xfe\x80secret".decode("utf-8", "surrogateescape")
+
+
+def test_binary_env_password_does_not_crash_compare(monkeypatch):
+    monkeypatch.setattr(dash, "_PASS", _BINARY_PASS)
+    assert dash._check_credentials(dash._USER, "wrong") is False
+    # Same str on both sides still compares equal.
+    assert dash._check_credentials(dash._USER, _BINARY_PASS) is True
+
+
+def test_binary_env_password_login_fails_cleanly(monkeypatch):
+    monkeypatch.setattr(dash, "_USER", "admin")
+    monkeypatch.setattr(dash, "_PASS", _BINARY_PASS)
+    monkeypatch.setattr(dash, "_login_rate_limited", lambda _: False)
+    client = dash.app.test_client()
+    client.get("/login")
+    with client.session_transaction() as session:
+        token = session["_csrf_token"]
+    resp = client.post("/login", data={"_csrf": token, "username": "admin", "password": "x"})
+    assert resp.status_code == 200
+    assert b"Invalid credentials" in resp.data
+
+
+def test_startup_banner_warns_on_untypeable_credentials(monkeypatch, capsys):
+    monkeypatch.setattr(dash, "init_db", lambda: None)
+    monkeypatch.setattr(dash, "_PASS", _BINARY_PASS)
+    monkeypatch.setattr(dash, "_GENERATED_PASS", False)
+    dash._print_startup_banner()
+    out = capsys.readouterr().out
+    assert "SENTINEL_PASS" in out and "UTF-8" in out
+
+
+def test_startup_banner_quiet_on_normal_credentials(monkeypatch, capsys):
+    monkeypatch.setattr(dash, "init_db", lambda: None)
+    monkeypatch.setattr(dash, "_PASS", "contraseña🔐")
+    monkeypatch.setattr(dash, "_GENERATED_PASS", False)
+    dash._print_startup_banner()
+    assert "UTF-8" not in capsys.readouterr().out

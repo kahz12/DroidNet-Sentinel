@@ -243,10 +243,29 @@ def _csrf_ok(form_token: str) -> bool:
 #  Auth helpers
 # ══════════════════════════════════════════════════════════════════
 
+def _secret_bytes(value: str) -> bytes:
+    """Encode a credential for comparison without ever raising.
+
+    On POSIX, os.environ decodes non-UTF-8 bytes with surrogateescape, so a
+    binary SENTINEL_PASS arrives as a str with lone surrogates that a strict
+    .encode("utf-8") rejects. surrogatepass encodes any str deterministically.
+    """
+    return value.encode("utf-8", "surrogatepass")
+
+
+def _is_typeable(value: str) -> bool:
+    """True when *value* is valid UTF-8 and can be entered in the login form."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _check_credentials(username: str, password: str) -> bool:
     """Constant-time credential comparison to prevent timing attacks."""
-    ok_user = hmac.compare_digest(username.encode("utf-8"), _USER.encode("utf-8"))
-    ok_pass = hmac.compare_digest(password.encode("utf-8"), _PASS.encode("utf-8"))
+    ok_user = hmac.compare_digest(_secret_bytes(username), _secret_bytes(_USER))
+    ok_pass = hmac.compare_digest(_secret_bytes(password), _secret_bytes(_PASS))
     return ok_user and ok_pass
 
 
@@ -376,6 +395,23 @@ a:hover { color: var(--accent-2); }
     border-radius: var(--radius);
     box-shadow: var(--shadow);
 }
+
+/* Risk colours — shared so every page using an r-* class is styled. */
+.r-critical { color: var(--danger);
+              background: rgba(248,81,73,0.12);
+              border: 1px solid rgba(248,81,73,0.5); }
+.r-medium   { color: var(--warn);
+              background: rgba(210,153,34,0.12);
+              border: 1px solid rgba(210,153,34,0.5); }
+.r-low      { color: var(--info);
+              background: rgba(121,192,255,0.12);
+              border: 1px solid rgba(121,192,255,0.5); }
+.r-minimal  { color: var(--ok);
+              background: rgba(63,185,80,0.12);
+              border: 1px solid rgba(63,185,80,0.5); }
+.r-unknown  { color: var(--text-mut);
+              background: rgba(139,148,158,0.12);
+              border: 1px dashed rgba(139,148,158,0.6); }
 """
 
 
@@ -551,6 +587,7 @@ _DASHBOARD_TEMPLATE = """
         .legend .dot.r-medium   { background: var(--warn);   }
         .legend .dot.r-low    { background: var(--info);   }
         .legend .dot.r-minimal  { background: var(--ok);     }
+        .legend .dot.r-unknown  { background: var(--text-mut); }
         .legend .help-link { margin-left: auto; }
 
         .grid {
@@ -604,6 +641,8 @@ _DASHBOARD_TEMPLATE = """
         }
         .host.vuln { border-left-color: var(--danger); }
         .host.new  { border-left-color: var(--warn);   }
+        /* Not assessed: neutral and dashed so it never reads as healthy. */
+        .host.unknown { border-left: 3px dashed var(--text-mut); }
 
         .host-head {
             display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -630,23 +669,12 @@ _DASHBOARD_TEMPLATE = """
             padding: 2px 8px; border-radius: 999px;
             text-transform: uppercase;
         }
-        .r-critical { color: var(--danger);
-                     background: rgba(248,81,73,0.12);
-                     border: 1px solid rgba(248,81,73,0.5); }
-        .r-medium   { color: var(--warn);
-                     background: rgba(210,153,34,0.12);
-                     border: 1px solid rgba(210,153,34,0.5); }
-        .r-low    { color: var(--info);
-                     background: rgba(121,192,255,0.12);
-                     border: 1px solid rgba(121,192,255,0.5); }
-        .r-minimal  { color: var(--ok);
-                     background: rgba(63,185,80,0.12);
-                     border: 1px solid rgba(63,185,80,0.5); }
 
         .ports { margin-top: 8px; font-family: var(--font-mono);
                  font-size: 0.82rem; color: var(--text-mut); }
         .ports .ok-line  { color: var(--ok);  display: block; }
         .ports .bad-line { color: #ff7b72;    display: block; }
+        .ports .unknown-line { color: var(--text-mut); display: block; }
 
         .diff-box {
             margin-top: 10px;
@@ -737,6 +765,7 @@ _DASHBOARD_TEMPLATE = """
             <span><span class="dot r-medium"></span>Medium — exposed service</span>
             <span><span class="dot r-low"></span>Low — open ports, low impact</span>
             <span><span class="dot r-minimal"></span>Minimal — no open ports</span>
+            <span><span class="dot r-unknown"></span>Unknown — scan failed, retry</span>
             <a class="help-link" href="{{ url_for('help_page') }}">What does this mean?</a>
         </div>
 
@@ -765,7 +794,10 @@ _DASHBOARD_TEMPLATE = """
                     {% set risk    = scan.risks.get(ip, 'MINIMAL') %}
                     {% set is_new  = ip in scan.new_ips %}
                     {% set is_vuln = risk in ('CRITICAL', 'MEDIUM', 'LOW') %}
-                    <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% endif %}">
+                    {# Anything not positively assessed (UNKNOWN or an unexpected
+                       label) must never fall back to the green "healthy" border. #}
+                    {% set is_unknown = not is_vuln and risk != 'MINIMAL' %}
+                    <div class="host {% if is_new %}new{% elif is_vuln %}vuln{% elif is_unknown %}unknown{% endif %}">
                         <div class="host-head">
                             <span class="ip">{{ ip }}</span>
                             {% if is_new %}<span class="badge badge-new">new</span>{% endif %}
@@ -774,13 +806,13 @@ _DASHBOARD_TEMPLATE = """
                                 {% elif risk == 'MEDIUM'  %}r-medium
                                 {% elif risk == 'LOW'   %}r-low
                                 {% elif risk == 'MINIMAL' %}r-minimal
-                                {% else %}r-medium{% endif %}">{{ risk }}</span>
+                                {% else %}r-unknown{% endif %}">{{ risk }}</span>
                         </div>
 
                         <div class="ports">
                         {% for port in ports %}
-                            {% if risk == 'UNKNOWN' %}
-                                <span>? {{ port }}</span>
+                            {% if is_unknown %}
+                                <span class="unknown-line">? {{ port }}</span>
                             {% elif is_vuln %}
                                 <span class="bad-line">! {{ port }}</span>
                             {% else %}
@@ -1091,7 +1123,7 @@ _HELP_TEMPLATE = """
                             <td>Host is reachable but exposes no services.</td>
                         </tr>
                         <tr>
-                            <td><span class="pill r-medium">UNKNOWN</span></td>
+                            <td><span class="pill r-unknown">UNKNOWN</span></td>
                             <td>Failed or inconclusive scan</td>
                             <td>The host could not be assessed. Retry before
                                 drawing conclusions about its exposure.</td>
@@ -1104,6 +1136,7 @@ _HELP_TEMPLATE = """
                     <p>All endpoints require an authenticated session and
                        return JSON. Useful for piping into your own tooling.</p>
                     <ul>
+                        <li><code>GET /api/reports</code> — every stored scan.</li>
                         <li><code>GET /api/reports?page=1&amp;per_page=20</code> —
                             a page of scans (maximum 100). Follow the response's
                             next-page Link header to retrieve more.</li>
@@ -1289,7 +1322,17 @@ def help_page():
 @app.route("/api/reports")
 @login_required
 def api_reports():
-    """Return a bounded page; keep the JSON array shape for integrations."""
+    """Return scans as a JSON array for integrations.
+
+    Without ``page``/``per_page`` this keeps the original contract and
+    returns the full history (bounded in practice by db_retention_days).
+    Passing either parameter opts into pagination.
+    """
+    if "page" not in request.args and "per_page" not in request.args:
+        data = get_all_scans()
+        response = jsonify(data)
+        response.headers["X-Total-Count"] = str(len(data))
+        return response
     try:
         page = max(1, int(request.args.get("page", 1)))
         per_page = max(1, min(int(request.args.get("per_page", _DEFAULT_PAGE_SIZE)), _MAX_PAGE_SIZE))
@@ -1335,6 +1378,10 @@ def _print_startup_banner(host: str = "127.0.0.1", port: int = 5000) -> None:
     if host == "0.0.0.0":
         print("[!] Dashboard exposed to the LAN. Front it with a TLS proxy")
         print("    (nginx / caddy) — credentials travel in plaintext otherwise.")
+    for var, value in (("SENTINEL_USER", _USER), ("SENTINEL_PASS", _PASS)):
+        if not _is_typeable(value):
+            print(f"[!] {var} contains bytes that are not valid UTF-8 and cannot be")
+            print("    typed into the login form. Set it to a UTF-8 value.")
     if _GENERATED_PASS:
         print("[!] SENTINEL_PASS not configured — a temporary password was generated.")
         if _PASS_PERSISTED:

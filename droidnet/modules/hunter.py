@@ -29,6 +29,7 @@ from rich.console   import Console
 from rich.table     import Table
 
 from droidnet.config import REPORTS_DIR
+from droidnet.core.markup import esc
 
 console = Console()
 
@@ -85,7 +86,7 @@ def _hunt_exploits_local(query: str) -> list[dict] | None:
             timeout=30,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        rprint(f"[red]Error querying local Exploit-DB: {exc}[/red]")
+        rprint(f"[red]Error querying local Exploit-DB: {esc(exc)}[/red]")
         return None
 
     if proc.returncode != 0 or not proc.stdout:
@@ -94,7 +95,7 @@ def _hunt_exploits_local(query: str) -> list[dict] | None:
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        rprint(f"[yellow]searchsploit returned non-JSON output for '{query}': {exc}[/yellow]")
+        rprint(f"[yellow]searchsploit returned non-JSON output for '{esc(query)}': {esc(exc)}[/yellow]")
         return None
 
     results = data.get("RESULTS_EXPLOIT") if isinstance(data, dict) else None
@@ -118,7 +119,7 @@ def _hunt_exploits_online(query: str) -> list[dict] | None:
         resp.raise_for_status()
         payload = resp.json()
     except (requests.RequestException, ValueError) as exc:
-        rprint(f"[yellow]Online fallback failed for '{query}': {exc}[/yellow]")
+        rprint(f"[yellow]Online fallback failed for '{esc(query)}': {esc(exc)}[/yellow]")
         return None
 
     data = payload.get("data") if isinstance(payload, dict) else None
@@ -185,7 +186,7 @@ def run_hunter() -> None:
         rprint("[yellow][-] No Sentinel reports found. Run a scan first.[/yellow]")
         return
 
-    rprint(f"[*] Loading latest scan: [bold white]{latest}[/bold white]")
+    rprint(f"[*] Loading latest scan: [bold white]{esc(latest)}[/bold white]")
 
     try:
         with open(latest) as fh:
@@ -193,21 +194,21 @@ def run_hunter() -> None:
         if not isinstance(data, dict) or not isinstance(data.get("targets"), dict):
             raise ValueError("invalid report structure")
     except (OSError, ValueError) as exc:
-        rprint(f"[yellow]Could not load report: {exc}[/yellow]")
+        rprint(f"[yellow]Could not load report: {esc(exc)}[/yellow]")
         return
 
     for ip, services in data.get("targets", {}).items():
         if "Shield intact" in services or (services and "Error" in services[0]):
             continue
 
-        rprint(f"\n[bold green][+][/bold green] Analysing: [bold cyan]{ip}[/bold cyan]")
+        rprint(f"\n[bold green][+][/bold green] Analysing: [bold cyan]{esc(ip)}[/bold cyan]")
 
         for raw in services:
             query = clean_service_name(raw)
             if not query or len(query) < 4:
                 continue
 
-            rprint(f"  [*] Query: [yellow]{query}[/yellow]")
+            rprint(f"  [*] Query: [yellow]{esc(query)}[/yellow]")
             exploits = hunt_exploits(query)
 
             if exploits:
@@ -216,11 +217,14 @@ def run_hunter() -> None:
                 table.add_column("Exploit Title", style="white")
                 table.add_column("Path / EDB-ID", style="dim",   justify="right")
 
+                # Exploit-DB / Vulners fields are external data, and table
+                # cells are parsed as markup. A null field from the API
+                # falls back to a label instead of rendering "None".
                 for ex in exploits[:5]:
                     table.add_row(
-                        ex.get("Date_Published", "") or "—",
-                        ex.get("Title", "Unknown"),
-                        ex.get("Path", ""),
+                        esc(ex.get("Date_Published") or "—"),
+                        esc(ex.get("Title") or "Unknown"),
+                        esc(ex.get("Path") or ""),
                     )
 
                 console.print(table)

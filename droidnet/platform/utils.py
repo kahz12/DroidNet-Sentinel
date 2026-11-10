@@ -17,6 +17,9 @@ import shutil
 import subprocess
 
 from rich import print as rprint
+# rich's escape directly, not droidnet.core.markup.esc: importing droidnet.core
+# runs its __init__, which imports notifier → this module (circular import).
+from rich.markup import escape
 
 _COMMAND_TIMEOUT = 10
 
@@ -328,7 +331,8 @@ def send_notification(title: str, message: str) -> None:
             except Exception:
                 pass
 
-    rprint(f"[dim][🔔] {title}: {message}[/dim]")
+    # message carries the SSID ("N hosts analysed on <SSID>"): escape it.
+    rprint(f"[dim][🔔] {escape(str(title))}: {escape(str(message))}[/dim]")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -347,9 +351,9 @@ if __name__ == "__main__":
 
     wifi = get_wifi_info()
     if wifi:
-        console.print(f"  WiFi SSID  : [bold white]{wifi['ssid']}[/bold white]")
-        console.print(f"  Local IP   : [cyan]{wifi['ip']}[/cyan]")
-        console.print(f"  BSSID      : [dim]{wifi['bssid']}[/dim]")
+        console.print(f"  WiFi SSID  : [bold white]{escape(str(wifi['ssid']))}[/bold white]")
+        console.print(f"  Local IP   : [cyan]{escape(str(wifi['ip']))}[/cyan]")
+        console.print(f"  BSSID      : [dim]{escape(str(wifi['bssid']))}[/dim]")
     else:
         console.print("  WiFi       : [red]Not detected[/red]")
 

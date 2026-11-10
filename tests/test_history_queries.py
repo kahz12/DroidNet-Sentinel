@@ -60,3 +60,18 @@ def test_api_pagination_preserves_array_and_bounds_work(history):
     assert client.get("/api/reports?page=99999999999999999999999999").json == []
     assert client.get("/api/reports?page=no").status_code == 400
     assert client.get("/api/reports?per_page=99999").headers["X-Per-Page"] == "100"
+
+
+def test_api_without_params_returns_full_history(history):
+    # Legacy contract: a bare GET returns every stored scan, not one page.
+    client = dash.app.test_client()
+    with client.session_transaction() as sess:
+        sess["authenticated"] = True
+    resp = client.get("/api/reports")
+    assert resp.status_code == 200
+    assert len(resp.json) == 21
+    assert resp.headers["X-Total-Count"] == "21"
+    assert "Link" not in resp.headers
+    # Supplying either parameter opts into pagination.
+    assert len(client.get("/api/reports?page=1").json) == dash._DEFAULT_PAGE_SIZE
+    assert len(client.get("/api/reports?per_page=5").json) == 5
