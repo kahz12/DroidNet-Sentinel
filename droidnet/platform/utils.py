@@ -6,7 +6,7 @@ unified functions for WiFi info, notifications and privilege checks.
 
 Supported platforms:
     Android (Termux)  → termux-wifi-connectioninfo, termux-notification
-    Linux PC          → nmcli / iwconfig, notify-send
+    Linux PC          → nmcli / iw, notify-send
 """
 
 import functools
@@ -15,6 +15,7 @@ import re
 import platform
 import shutil
 import subprocess
+from pathlib import Path
 
 from rich import print as rprint
 # rich's escape directly, not droidnet.core.markup.esc: importing droidnet.core
@@ -55,9 +56,28 @@ def check_root() -> bool:
 #  Tool availability
 # ══════════════════════════════════════════════════════════════════
 
+# Network admin tools (iw, arpspoof) install under sbin, which cron and
+# systemd routinely drop from PATH (often just /usr/bin:/bin). Search these
+# alongside PATH so a reduced environment still finds them.
+_SBIN_DIRS = ("/usr/sbin", "/sbin", "/usr/local/sbin")
+
+
+def resolve_command(cmd: str) -> str | None:
+    """Full path to *cmd*, searching PATH and then the standard sbin directories.
+
+    Returns None when the tool is nowhere to be found. Resolving to an absolute
+    path also lets callers exec the tool without relying on the child's PATH,
+    which matters when the daemon runs under cron or systemd with a trimmed PATH.
+    """
+    found = shutil.which(cmd)
+    if found:
+        return found
+    return shutil.which(cmd, path=os.pathsep.join(_SBIN_DIRS))
+
+
 def has_command(cmd: str) -> bool:
-    """Return True if *cmd* is available in PATH."""
-    return shutil.which(cmd) is not None
+    """Return True if *cmd* is available in PATH or the standard sbin directories."""
+    return resolve_command(cmd) is not None
 
 
 def get_available_tools() -> dict[str, bool]:
@@ -79,7 +99,6 @@ def get_available_tools() -> dict[str, bool]:
         tools["termux-notification"]        = has_command("termux-notification")
     else:
         tools["nmcli"]       = has_command("nmcli")
-        tools["iwconfig"]    = has_command("iwconfig")
         tools["notify-send"] = has_command("notify-send")
 
     return tools
@@ -246,38 +265,72 @@ def _get_wifi_info_nmcli() -> dict | None:
     return None
 
 
-def _get_wifi_info_iwconfig() -> dict | None:
+_IW_CONNECTED = re.compile(r"^Connected to ([0-9A-Fa-f:]{17})\b", re.M)
+_IW_SSID      = re.compile(r"^\s*SSID: (.*)$", re.M)
+_IW_ESCAPE    = re.compile(rb"\\x([0-9A-Fa-f]{2})")
+
+
+def _unescape_iw_ssid(printed: str) -> str:
+    """Recover the SSID that ``iw`` printed through print_ssid_escaped().
+
+    iw writes printable ASCII and inner spaces as-is and every other byte
+    (non-ASCII, a backslash, a leading or trailing space) as \\xNN. Undo the
+    escapes byte by byte, then decode as UTF-8 — the usual SSID encoding —
+    replacing invalid sequences rather than failing on an odd network name.
+    """
+    raw = _IW_ESCAPE.sub(lambda m: bytes([int(m.group(1), 16)]),
+                         printed.encode("ascii", "backslashreplace"))
+    return raw.decode("utf-8", "replace")
+
+
+def _get_wifi_info_iw() -> dict | None:
+    """SSID and BSSID from ``iw dev <iface> link``; None when not associated.
+
+    iw replaces the retired wireless-tools (iwconfig) and needs no root to
+    read the current link. Its output is not localised, so no locale override
+    is needed.
+    """
     try:
-        iface = get_default_iface()
-        proc  = subprocess.run(
-            ["iwconfig", iface],
+        # Resolved to an absolute path so the call works under a trimmed PATH.
+        # When iw cannot be resolved the bare name is still tried: a missing
+        # binary then raises FileNotFoundError, handled below like any failure.
+        iw = resolve_command("iw") or "iw"
+        proc = subprocess.run(
+            [iw, "dev", get_default_iface(), "link"],
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
         )
         if proc.returncode != 0:
             return None
-
-        ssid_match = re.search(r'ESSID[:\s]*"([^"]+)"', proc.stdout)
-        if not ssid_match:
-            return None
-
-        ssid        = ssid_match.group(1)
-        bssid_match = re.search(r"Access Point[:\s]*([0-9A-Fa-f:]{17})", proc.stdout)
-        bssid       = bssid_match.group(1) if bssid_match else "Unknown"
-        ip_addr     = _get_local_ip()
-
-        if ip_addr:
-            return {"ssid": ssid, "ip": ip_addr, "bssid": bssid, "platform": "linux"}
+        bssid = _IW_CONNECTED.search(proc.stdout)
+        ssid  = _IW_SSID.search(proc.stdout)
+        ip_addr = _get_local_ip()
+        if bssid and ssid and ip_addr:
+            return {"ssid": _unescape_iw_ssid(ssid.group(1)), "ip": ip_addr,
+                    "bssid": bssid.group(1).upper(), "platform": "linux"}
     except Exception:
         pass
     return None
 
 
+_SYS_NET = Path("/sys/class/net")
+
+
+def _is_wireless(iface: str) -> bool:
+    """True when *iface* is a Wi-Fi device (cfg80211 links it to a phy80211)."""
+    return (_SYS_NET / iface / "phy80211").exists()
+
+
 def get_wifi_info() -> dict | None:
     """
-    Return active WiFi connection info in a unified format:
+    Return active network info in a unified format:
         {"ssid": str, "ip": str, "bssid": str, "platform": str}
 
-    Returns None if no active WiFi connection is detected.
+    On Linux the SSID comes from nmcli, or from iw when NetworkManager is not
+    in use (netplan + systemd-networkd, for example). Without either tool the
+    connection is still returned under a generic label so scans keep working;
+    the label says Wi-Fi or wired from the kernel's own view of the interface.
+
+    Returns None if there is no usable network connection.
     """
     if is_termux():
         return _get_wifi_info_termux()
@@ -287,14 +340,17 @@ def get_wifi_info() -> dict | None:
         if info:
             return info
 
-    if has_command("iwconfig"):
-        info = _get_wifi_info_iwconfig()
+    if has_command("iw"):
+        info = _get_wifi_info_iw()
         if info:
             return info
 
     ip_addr = _get_local_ip()
     if ip_addr and ip_addr != "127.0.0.1":
-        return {"ssid": "Wired Network", "ip": ip_addr, "bssid": "N/A", "platform": "linux"}
+        # Without an SSID every network shares this label in the history;
+        # installing iw (or nmcli) restores the real network name.
+        label = "Unknown Wi-Fi" if _is_wireless(get_default_iface()) else "Wired Network"
+        return {"ssid": label, "ip": ip_addr, "bssid": "N/A", "platform": "linux"}
 
     return None
 

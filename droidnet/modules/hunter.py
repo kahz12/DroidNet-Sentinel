@@ -1,9 +1,10 @@
 """
 Exploit Lookup Module — cross-references scan results with Exploit-DB.
 
-Takes the most recent Sentinel JSON report and searches each detected
-service against the local Exploit-DB via searchsploit. If searchsploit
-is unavailable, it falls back to the public Vulners API.
+Takes the most recent scan with detected services from the history database
+(the same scan CVE Watcher analyses) and searches each service against the
+local Exploit-DB via searchsploit. If searchsploit is unavailable, it falls
+back to the public Vulners API.
 
 Requires:
     searchsploit — part of the exploitdb project (recommended)
@@ -19,7 +20,6 @@ API is used (rate-limited, no API key).
 """
 
 import json
-import os
 import shutil
 import subprocess
 
@@ -28,8 +28,10 @@ from rich           import print as rprint
 from rich.console   import Console
 from rich.table     import Table
 
-from droidnet.config import REPORTS_DIR
+from droidnet.core.database import init_db, get_latest_scan_with_services
 from droidnet.core.markup import esc
+from droidnet.core.risk import is_port_line
+from droidnet.modules.cve_watcher import parse_service_info
 
 console = Console()
 
@@ -45,18 +47,6 @@ def _searchsploit_path() -> str | None:
 _EXPLOIT_CACHE: dict[str, list[dict]] = {}
 
 
-def get_latest_report() -> str | None:
-    """
-    Return the path of the most recently modified report JSON file.
-
-    Returns None if the reports directory is empty or does not exist.
-    """
-    files = list(REPORTS_DIR.glob("*.json"))
-    if not files:
-        return None
-    return str(max(files, key=os.path.getmtime))
-
-
 def clean_service_name(raw_service: str) -> str | None:
     """
     Extract the software name from an nmap port line for use as a
@@ -65,19 +55,16 @@ def clean_service_name(raw_service: str) -> str | None:
     Input : "80/tcp   open  http    Apache httpd 2.4.29 ((Ubuntu))"
     Output: "Apache httpd 2.4.29"
 
-    Returns None for lines that cannot be parsed (markers, errors).
+    Uses CVE Watcher's parser, so both modules read banners the same way
+    (MariaDB's real version, no wildcard ranges in product names).
+    Returns None for markers and port lines without a banner.
     """
-    parts = raw_service.split()
-    if len(parts) < 4 or "Shield" in raw_service or "Error" in raw_service:
-        return None
-
-    query = " ".join(parts[3:])
-    query = query.split("(")[0].strip()
-    return query or None
+    info = parse_service_info(raw_service)
+    return info["raw"] if info else None
 
 
 def _hunt_exploits_local(query: str) -> list[dict] | None:
-    """Consulta searchsploit local. Devuelve lista de dicts de exploits."""
+    """Query the local searchsploit binary. Returns a list of exploit dicts."""
     try:
         proc = subprocess.run(
             ["searchsploit", query, "--disable-colour", "-j"],
@@ -169,8 +156,14 @@ def run_hunter() -> None:
     """
     Main Hunter entry point.
 
-    Loads the latest Sentinel report, iterates over each scanned host
-    and service, queries Exploit-DB, and prints results to the terminal.
+    Loads the newest scan with detected services, iterates over each scanned
+    host and service, queries Exploit-DB, and prints results to the terminal.
+
+    The scan comes from the history database, not from the JSON files under
+    reports/, so Hunter and CVE Watcher always analyse the same scan. The
+    newest JSON file by modification time is not a reliable "latest scan":
+    copying or touching an old report changes it, and the newest scan may
+    have found no service to look up at all.
     """
     _EXPLOIT_CACHE.clear()
     rprint("[bold red][☠][/bold red] Starting DroidNet Hunter module...")
@@ -181,24 +174,22 @@ def run_hunter() -> None:
             "using online fallback (Vulners, rate-limited).[/yellow]"
         )
 
-    latest = get_latest_report()
-    if not latest:
-        rprint("[yellow][-] No Sentinel reports found. Run a scan first.[/yellow]")
+    # Hunter may be the first thing run on a fresh install, before any scan
+    # has created the schema (idempotent).
+    init_db()
+    scan = get_latest_scan_with_services()
+    if not scan:
+        rprint("[yellow][-] No scans with detected services found. Run Sentinel first.[/yellow]")
         return
 
-    rprint(f"[*] Loading latest scan: [bold white]{esc(latest)}[/bold white]")
+    # The network name is the SSID, which any nearby access point can choose.
+    rprint(f"[*] Analysing scan from [bold white]{esc(scan['network'])}[/bold white] "
+           f"(ID: {scan['id']}, {esc(scan['scan_time'])})")
 
-    try:
-        with open(latest) as fh:
-            data = json.load(fh)
-        if not isinstance(data, dict) or not isinstance(data.get("targets"), dict):
-            raise ValueError("invalid report structure")
-    except (OSError, ValueError) as exc:
-        rprint(f"[yellow]Could not load report: {esc(exc)}[/yellow]")
-        return
-
-    for ip, services in data.get("targets", {}).items():
-        if "Shield intact" in services or (services and "Error" in services[0]):
+    for ip, services in scan["targets"].items():
+        # Hosts holding only markers ("Shield intact", "Error: ...") have no
+        # service to look up.
+        if not any(is_port_line(s) for s in services):
             continue
 
         rprint(f"\n[bold green][+][/bold green] Analysing: [bold cyan]{esc(ip)}[/bold cyan]")

@@ -1,5 +1,5 @@
 from droidnet.core.env import evaluate_system, display_capabilities
-from droidnet.core.notifier import send_local, send_telegram, send_alert, escape_markdown
+from droidnet.core.notifier import send_local, send_telegram, send_alert, escape_html
 
 __all__ = [
     "evaluate_system",
@@ -7,5 +7,5 @@ __all__ = [
     "send_local",
     "send_telegram",
     "send_alert",
-    "escape_markdown",
+    "escape_html",
 ]

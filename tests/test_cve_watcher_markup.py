@@ -2,9 +2,9 @@
 
 Banners come from devices on the scanned LAN, network names can be SSIDs,
 and NVD / database fields are external data. A stray closing tag such as
-"[/x]" in any of them used to raise MarkupError and abort the whole run;
-a valid tag such as "[link=...]" was silently turned into a terminal
-hyperlink.
+"[/x]" in any of them would raise MarkupError and abort the whole run, and
+a valid tag such as "[link=...]" would turn into a terminal hyperlink, so
+every interpolated value is escaped at the boundary.
 """
 import io
 from unittest.mock import Mock
@@ -31,8 +31,11 @@ def out(monkeypatch):
 
 
 def test_run_survives_hostile_banner_and_network(out, monkeypatch):
+    # Description names the product with a range covering the banner's 1.0,
+    # so the CVE is kept as a candidate.
     hostile_cve = {"cve_id": "CVE-2026-0001", "severity": "[/sev]", "score": 5.0,
-                   "description": "desc [/d]", "cwes": [], "kev": False}
+                   "description": f"{PRODUCT} before 2.0 lets [/d] in", "cwes": [],
+                   "kev": False}
     alert = {"cve_id": "CVE-2026-0001", "severity": "[/sev]", "service": "svc[/s]",
              "ip": "192.0.2.5", "network": NETWORK, "created_at": "2026-11-09"}
     monkeypatch.setattr(cve, "init_db", lambda: None)
@@ -95,5 +98,5 @@ def test_cache_hit_message_is_literal(out, monkeypatch, tmp_path):
     monkeypatch.setattr(cve, "_nvd_get", Mock(return_value=empty))
     cve.query_nvd("k[/x]")
     cve.query_nvd("k[/x]")  # served from cache
-    # "[cache]" itself used to be swallowed as a style tag.
+    # The literal "[cache]" label must survive: Rich would read it as a style tag.
     assert "[cache] k[/x]" in out()

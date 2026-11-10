@@ -20,6 +20,8 @@ Routes:
     GET  /help               → in-app help / user guide (auth required)
     GET  /api/reports        → paginated scan JSON     (auth required)
     GET  /api/scan/<id>/diff → diff JSON for one scan  (auth required)
+    GET  /alerts             → CVE alerts, filterable (auth required)
+    GET  /api/alerts         → CVE alerts as JSON      (auth required)
 
 Data source:
     SQLite via droidnet.core.database (sentinel.db in project root).
@@ -28,6 +30,7 @@ Data source:
 
 import hmac
 import os
+import re
 import secrets
 import stat
 import time
@@ -45,11 +48,14 @@ from flask import (
 
 from droidnet.core.logger import get_logger
 from droidnet.core.database import (
+    CVE_SEVERITIES,
     init_db,
     get_all_scans,
     get_all_scans_with_diffs,
     get_scan_diff,
     count_scans,
+    list_cve_alerts,
+    summarize_cve_alerts,
 )
 
 log = get_logger(__name__)
@@ -305,6 +311,7 @@ _BASE_CSS = """
     --ok:         #3fb950;
     --warn:       #d29922;
     --danger:     #f85149;
+    --high:       #f0883e;   /* CVSS HIGH: between --danger and --warn */
     --info:       #79c0ff;
 
     --radius:     10px;
@@ -340,7 +347,9 @@ body {
 }
 
 a { color: var(--accent); text-decoration: none; }
-a:hover { color: var(--accent-2); }
+/* Badges keep their severity colour on hover; they dim instead. */
+a:not(.badge):hover { color: var(--accent-2); }
+a.badge:hover { opacity: 0.8; }
 
 /* Top navigation, used on all authenticated pages. */
 .topbar {
@@ -396,10 +405,28 @@ a:hover { color: var(--accent-2); }
     box-shadow: var(--shadow);
 }
 
+/* Small rounded labels ("new", "4 CVEs"); colour comes from a second class. */
+.badge {
+    display: inline-block; font-size: 0.68rem;
+    font-weight: 600; letter-spacing: 0.5px;
+    padding: 2px 8px; border-radius: 999px;
+    text-transform: uppercase;
+}
+.badge-new {
+    color: var(--warn);
+    background: rgba(210,153,34,0.12);
+    border: 1px solid rgba(210,153,34,0.5);
+}
+/* "4 CVEs": keep the identifier's case instead of upper-casing it. */
+.badge-cve { text-transform: none; }
+
 /* Risk colours — shared so every page using an r-* class is styled. */
 .r-critical { color: var(--danger);
               background: rgba(248,81,73,0.12);
               border: 1px solid rgba(248,81,73,0.5); }
+.r-high     { color: var(--high);
+              background: rgba(240,136,62,0.12);
+              border: 1px solid rgba(240,136,62,0.5); }
 .r-medium   { color: var(--warn);
               background: rgba(210,153,34,0.12);
               border: 1px solid rgba(210,153,34,0.5); }
@@ -413,6 +440,64 @@ a:hover { color: var(--accent-2); }
               background: rgba(139,148,158,0.12);
               border: 1px dashed rgba(139,148,158,0.6); }
 """
+
+# Summary tiles and the empty-state block, shared by the dashboard and the
+# CVE alerts page. A tile can be a link (<a class="stat">) to a detail page.
+_TILES_CSS = """
+.summary {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    margin-bottom: 22px;
+}
+.stat {
+    display: block;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+}
+a.stat { color: inherit; transition: border-color 0.15s; }
+a.stat:hover { color: inherit; border-color: var(--accent); }
+.stat .label {
+    color: var(--text-mut); font-size: 0.75rem;
+    letter-spacing: 0.7px; text-transform: uppercase;
+}
+.stat .value {
+    margin-top: 4px;
+    font-size: 1.5rem; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+.stat .sub { color: var(--text-mut); font-size: 0.78rem; margin-top: 2px; }
+.stat.ok    .value { color: var(--ok);     }
+.stat.warn  .value { color: var(--warn);   }
+.stat.high  .value { color: var(--high);   }
+.stat.bad   .value { color: var(--danger); }
+.stat.info  .value { color: var(--info);   }
+
+.empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-mut);
+}
+.empty .big { font-size: 2rem; margin-bottom: 10px; }
+.empty a {
+    display: inline-block; margin-top: 14px;
+    background: var(--bg-elev); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 14px;
+    border-radius: var(--radius-sm);
+}
+.empty code {
+    font-family: var(--font-mono); color: var(--accent-2);
+}
+"""
+
+# CVE severity → shared r-* colour class; anything else renders as unknown.
+_SEVERITY_CLASS = {
+    "CRITICAL": "r-critical",
+    "HIGH":     "r-high",
+    "MEDIUM":   "r-medium",
+    "LOW":      "r-low",
+}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -542,32 +627,7 @@ _DASHBOARD_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sentinel · Dashboard</title>
     <style>
-""" + _BASE_CSS + """
-        .summary {
-            display: grid; gap: 14px;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            margin-bottom: 22px;
-        }
-        .stat {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 14px 16px;
-        }
-        .stat .label {
-            color: var(--text-mut); font-size: 0.75rem;
-            letter-spacing: 0.7px; text-transform: uppercase;
-        }
-        .stat .value {
-            margin-top: 4px;
-            font-size: 1.5rem; font-weight: 700;
-            font-variant-numeric: tabular-nums;
-        }
-        .stat.ok    .value { color: var(--ok);     }
-        .stat.warn  .value { color: var(--warn);   }
-        .stat.bad   .value { color: var(--danger); }
-        .stat.info  .value { color: var(--info);   }
-
+""" + _BASE_CSS + _TILES_CSS + """
         .legend {
             display: flex; flex-wrap: wrap; gap: 14px;
             background: var(--bg-soft);
@@ -652,17 +712,6 @@ _DASHBOARD_TEMPLATE = """
             font-weight: 700;
             color: var(--info);
         }
-        .badge {
-            display: inline-block; font-size: 0.68rem;
-            font-weight: 600; letter-spacing: 0.5px;
-            padding: 2px 8px; border-radius: 999px;
-            text-transform: uppercase;
-        }
-        .badge-new {
-            color: var(--warn);
-            background: rgba(210,153,34,0.12);
-            border: 1px solid rgba(210,153,34,0.5);
-        }
         .risk {
             font-size: 0.72rem; font-weight: 700;
             letter-spacing: 0.5px;
@@ -700,19 +749,6 @@ _DASHBOARD_TEMPLATE = """
             padding-top: 10px;
         }
 
-        .empty {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--text-mut);
-        }
-        .empty .big { font-size: 2rem; margin-bottom: 10px; }
-        .empty a {
-            display: inline-block; margin-top: 14px;
-            background: var(--bg-elev); border: 1px solid var(--border);
-            color: var(--text); padding: 8px 14px;
-            border-radius: var(--radius-sm);
-        }
-
         .pager {
             display: flex; justify-content: center; align-items: center;
             gap: 14px; margin-top: 28px;
@@ -737,6 +773,7 @@ _DASHBOARD_TEMPLATE = """
         </div>
         <div class="nav">
             <a class="active" href="{{ url_for('index') }}">Dashboard</a>
+            <a href="{{ url_for('alerts_page') }}">CVE alerts</a>
             <a href="{{ url_for('help_page') }}">Help</a>
             <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
         </div>
@@ -758,6 +795,11 @@ _DASHBOARD_TEMPLATE = """
                  <div class="value">{{ stats.crit_count }}</div></div>
             <div class="stat ok"><div class="label">Page</div>
                  <div class="value">{{ page }} / {{ total_pages }}</div></div>
+            <a class="stat {{ 'bad' if cve.urgent else 'info' }}" href="{{ url_for('alerts_page') }}">
+                <div class="label">CVE alerts</div>
+                <div class="value">{{ cve.total }}</div>
+                <div class="sub">{{ cve.critical }} critical · {{ cve.high }} high</div>
+            </a>
         </section>
 
         <div class="legend">
@@ -807,6 +849,12 @@ _DASHBOARD_TEMPLATE = """
                                 {% elif risk == 'LOW'   %}r-low
                                 {% elif risk == 'MINIMAL' %}r-minimal
                                 {% else %}r-unknown{% endif %}">{{ risk }}</span>
+                            {# Known CVEs for this host on this network, coloured by
+                               the worst one; opens the alerts page filtered to it. #}
+                            {% set cves = cve_hosts.get((scan.network, ip)) %}
+                            {% if cves %}
+                            <a class="badge badge-cve {{ severity_class.get(cves.worst, 'r-unknown') }}" href="{{ url_for('alerts_page', network=scan.network, ip=ip) }}" title="Known CVE alerts for this host">{{ cves.count }} CVE{{ 's' if cves.count != 1 }}</a>
+                            {% endif %}
                         </div>
 
                         <div class="ports">
@@ -983,6 +1031,7 @@ _HELP_TEMPLATE = """
         </div>
         <div class="nav">
             <a href="{{ url_for('index') }}">Dashboard</a>
+            <a href="{{ url_for('alerts_page') }}">CVE alerts</a>
             <a class="active" href="{{ url_for('help_page') }}">Help</a>
             <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
         </div>
@@ -1002,6 +1051,7 @@ _HELP_TEMPLATE = """
                 <a href="#workflow">Typical workflow</a>
                 <a href="#features">Features</a>
                 <a href="#dashboard">Reading the dashboard</a>
+                <a href="#cve-alerts">CVE alerts</a>
                 <a href="#risk">Risk levels</a>
                 <a href="#api">API endpoints</a>
                 <a href="#security">Security & ethics</a>
@@ -1030,7 +1080,9 @@ _HELP_TEMPLATE = """
                         <li>Use <code>python main.py hunt</code> to look up
                             known exploits for the services you found.</li>
                         <li>Use <code>python main.py cve</code> to check the
-                            scan against recent CVEs.</li>
+                            scan against recent CVEs, or
+                            <code>python main.py cve --all-time</code> for a full
+                            audit, then review them under <strong>CVE alerts</strong>.</li>
                     </ol>
                 </section>
 
@@ -1054,8 +1106,10 @@ _HELP_TEMPLATE = """
                         </div>
                         <div class="feat">
                             <h4>CVE Watcher</h4>
-                            <p>Fingerprints services and queries the NVD for
-                               relevant CVEs published recently.</p>
+                            <p>Matches the detected software versions against the
+                               NVD: recent CVEs by default, or every date with
+                               <code>--all-time</code>. Results appear under
+                               CVE alerts.</p>
                         </div>
                         <div class="feat">
                             <h4>Spoofer (ARP)</h4>
@@ -1091,6 +1145,30 @@ _HELP_TEMPLATE = """
                     </ul>
                     <p>Press <span class="kbd">Ctrl</span> + <span class="kbd">F</span>
                        to filter visible cards by IP or by service banner.</p>
+                </section>
+
+                <section id="cve-alerts">
+                    <h2>CVE alerts</h2>
+                    <p>The <strong>CVE alerts</strong> page lists the known
+                       vulnerabilities CVE Watcher matched against the software
+                       it detected, most urgent first: by severity, then CVSS
+                       score. A host with alerts also shows a badge such as
+                       <span class="badge badge-cve r-critical">4 CVEs</span> on its scan
+                       card, coloured by its worst alert; it opens the page
+                       filtered to that host.</p>
+                    <ul>
+                        <li><strong>CPE</strong> — NVD itself matched the exact
+                            detected version against the CVE.</li>
+                        <li><strong>Candidate</strong> — NVD has not analysed the
+                            CVE yet; the affected versions were read from its
+                            description. Verify before acting.</li>
+                        <li><strong>First detected</strong> — when CVE Watcher
+                            first stored the alert (UTC).</li>
+                    </ul>
+                    <p>Each row expands to show the impact summary and the CVE
+                       description; the CVE identifier links to its NVD page.
+                       The list is filled by <code>python main.py cve</code>;
+                       the dashboard only reads it.</p>
                 </section>
 
                 <section id="risk">
@@ -1143,6 +1221,10 @@ _HELP_TEMPLATE = """
                         <li><code>GET /api/scan/&lt;id&gt;/diff</code> — diff
                             of one scan against the previous scan of the same
                             network.</li>
+                        <li><code>GET /api/alerts</code> — every CVE alert, most
+                            urgent first. Accepts <code>network</code>,
+                            <code>ip</code> and <code>severity</code> filters,
+                            like the CVE alerts page.</li>
                     </ul>
                 </section>
 
@@ -1171,6 +1253,197 @@ _HELP_TEMPLATE = """
 """
 
 
+_ALERTS_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel · CVE alerts</title>
+    <style>
+""" + _BASE_CSS + _TILES_CSS + """
+        .filters {
+            display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 14px;
+            margin-bottom: 18px;
+        }
+        .filters label {
+            display: flex; flex-direction: column; gap: 4px;
+            color: var(--text-mut); font-size: 0.75rem;
+            letter-spacing: 0.6px; text-transform: uppercase;
+        }
+        .filters select, .filters button {
+            font: inherit; font-size: 0.9rem; text-transform: none;
+            letter-spacing: normal;
+            background: var(--bg-deep); color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+        }
+        .filters button { background: var(--bg-elev); cursor: pointer; }
+        .filters button:hover { border-color: var(--accent); }
+        .filters .clear { font-size: 0.88rem; padding-bottom: 7px; }
+        .host-filter { color: var(--text-mut); font-size: 0.88rem; margin: -6px 0 16px; }
+        .host-filter code { font-family: var(--font-mono); color: var(--info); }
+
+        .table-wrap {
+            overflow-x: auto;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        table.alerts { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+        .alerts th {
+            text-align: left; padding: 10px 12px;
+            color: var(--text-mut); font-weight: 600; font-size: 0.75rem;
+            text-transform: uppercase; letter-spacing: 0.6px;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        .alerts td { padding: 9px 12px; vertical-align: top; }
+        .alerts tr.main td { border-top: 1px solid var(--border-mut); }
+        .alerts tbody tr.main:first-child td { border-top: 0; }
+        .alerts .mono { font-family: var(--font-mono); white-space: nowrap; }
+        .alerts .num  { font-variant-numeric: tabular-nums; text-align: right; }
+        .alerts .sub  { color: var(--text-mut); font-size: 0.78rem; }
+        .alerts .pill {
+            display: inline-block; padding: 2px 8px; border-radius: 999px;
+            font-size: 0.7rem; font-weight: 700; letter-spacing: 0.5px;
+        }
+        .alerts .tag {
+            display: inline-block; padding: 1px 7px; border-radius: 4px;
+            font-size: 0.72rem; border: 1px solid var(--border);
+            color: var(--text-mut);
+        }
+        .alerts .tag.candidate { border-style: dashed; }
+        .alerts tr.details td { padding-top: 0; }
+        .alerts details summary {
+            cursor: pointer; color: var(--text-mut); font-size: 0.8rem;
+        }
+        .alerts details[open] summary { margin-bottom: 6px; }
+        .alerts .impact { padding-left: 20px; color: var(--text); margin-bottom: 6px; }
+        .alerts .desc   { color: var(--text-mut); max-width: 90ch; }
+    </style>
+</head>
+<body>
+    <nav class="topbar">
+        <div class="brand">
+            <span class="logo">S</span>
+            <span class="name">Sentinel</span>
+            <span class="ver">Command Center</span>
+        </div>
+        <div class="nav">
+            <a href="{{ url_for('index') }}">Dashboard</a>
+            <a class="active" href="{{ url_for('alerts_page') }}">CVE alerts</a>
+            <a href="{{ url_for('help_page') }}">Help</a>
+            <a class="danger" href="{{ url_for('logout') }}">Sign out</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="page-header">
+            <h1>CVE alerts</h1>
+            <p>Known vulnerabilities matched against the software detected on
+               your networks, most urgent first. CVE Watcher fills this list;
+               the dashboard only reads it.</p>
+        </div>
+
+        <section class="summary">
+            <div class="stat info"><div class="label">Alerts shown</div>
+                 <div class="value">{{ alerts|length }}</div></div>
+            <div class="stat bad"><div class="label">Critical</div>
+                 <div class="value">{{ counts.CRITICAL }}</div></div>
+            <div class="stat high"><div class="label">High</div>
+                 <div class="value">{{ counts.HIGH }}</div></div>
+            <div class="stat warn"><div class="label">Medium</div>
+                 <div class="value">{{ counts.MEDIUM }}</div></div>
+            <div class="stat info"><div class="label">Low and other</div>
+                 <div class="value">{{ counts.OTHER }}</div></div>
+        </section>
+
+        <form class="filters" method="get" action="{{ url_for('alerts_page') }}">
+            <label>Network
+                <select name="network">
+                    <option value="">All networks</option>
+                    {% for net in networks %}
+                    <option value="{{ net }}" {% if net == filters.network %}selected{% endif %}>{{ net }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Severity
+                <select name="severity">
+                    <option value="">Any severity</option>
+                    {% for sev in severities %}
+                    <option value="{{ sev }}" {% if sev == filters.severity %}selected{% endif %}>{{ sev|capitalize }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            {% if filters.ip %}<input type="hidden" name="ip" value="{{ filters.ip }}">{% endif %}
+            <button type="submit">Apply</button>
+            {% if filtered %}<a class="clear" href="{{ url_for('alerts_page') }}">Clear filters</a>{% endif %}
+        </form>
+        {% if filters.ip %}
+        <p class="host-filter">Showing host <code>{{ filters.ip }}</code> only ·
+           <a href="{{ url_for('alerts_page', network=filters.network, severity=filters.severity) }}">show every host</a></p>
+        {% endif %}
+
+        {% if alerts %}
+        <div class="table-wrap">
+        <table class="alerts">
+            <thead>
+                <tr><th>Severity</th><th>Score</th><th>CVE</th><th>Host</th>
+                    <th>Service</th><th>Match</th><th>First detected</th></tr>
+            </thead>
+            <tbody>
+            {% for a in alerts %}
+                <tr class="main">
+                    <td><span class="pill {{ severity_class.get(a.severity, 'r-unknown') }}">{{ a.severity }}</span></td>
+                    <td class="num">{{ '%.1f'|format(a.score) if a.score is not none else '—' }}</td>
+                    <td class="mono">{% if a.nvd_url %}<a href="{{ a.nvd_url }}" target="_blank" rel="noopener noreferrer">{{ a.cve_id }}</a>{% else %}{{ a.cve_id }}{% endif %}</td>
+                    <td class="mono"><a href="{{ url_for('alerts_page', network=a.network, ip=a.ip) }}">{{ a.ip }}</a>
+                        <div class="sub">{{ a.network }}</div></td>
+                    <td>{{ a.service }}</td>
+                    <td>{% if a.match_type == 'candidate' %}<span class="tag candidate" title="Affected versions read from the CVE description; NVD has not confirmed them">Candidate</span>{% else %}<span class="tag" title="NVD matched the exact detected version">CPE</span>{% endif %}</td>
+                    <td class="mono sub">{{ a.detected }}</td>
+                </tr>
+                <tr class="details">
+                    <td colspan="7">
+                        <details>
+                            <summary>Impact and description</summary>
+                            {% if a.impact %}
+                            <ul class="impact">{% for part in a.impact.split(' | ') %}<li>{{ part }}</li>{% endfor %}</ul>
+                            {% endif %}
+                            <p class="desc">{{ a.summary }}</p>
+                        </details>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% elif filtered %}
+            <div class="empty">
+                <div class="big">No alerts match these filters</div>
+                <a href="{{ url_for('alerts_page') }}">Show all alerts</a>
+            </div>
+        {% else %}
+            <div class="empty">
+                <div class="big">No CVE alerts yet</div>
+                <p>Run <code>python main.py cve</code> after a scan, or
+                   <code>python main.py cve --all-time</code> for a full audit of
+                   every publication date. Matches appear here.</p>
+                <a href="{{ url_for('help_page') }}#cve-alerts">How CVE alerts work</a>
+            </div>
+        {% endif %}
+    </main>
+</body>
+</html>
+"""
+
+
 # ══════════════════════════════════════════════════════════════════
 #  Data helper
 # ══════════════════════════════════════════════════════════════════
@@ -1186,6 +1459,33 @@ _DEFAULT_PAGE_SIZE = 20
 _MAX_PAGE_SIZE     = 100
 
 
+def _read_pagination(total: int, *, strict: bool) -> tuple[int, int, int]:
+    """Read ``page``/``per_page`` from the request; return (page, per_page, total_pages).
+
+    One place owns the shared rules so the HTML dashboard and the JSON API
+    cannot drift apart: per_page is held within [1, _MAX_PAGE_SIZE], total_pages
+    is at least 1, and page is only floored at 1 — never capped at total_pages.
+    Each view then handles an out-of-range page (page > total_pages) its own way:
+    the dashboard shows the last page, the API returns an empty array.
+
+    *strict* selects the contract for a non-integer argument. The JSON API is
+    strict and aborts with 400; the browser view is lenient and falls back to
+    the default, so a stale bookmark with a bad query string still renders.
+    """
+    def _arg(name: str, default: int) -> int:
+        try:
+            return int(request.args.get(name, default))
+        except (TypeError, ValueError):
+            if strict:
+                abort(400, description="page and per_page must be integers")
+            return default
+
+    page     = max(1, _arg("page", 1))
+    per_page = max(1, min(_arg("per_page", _DEFAULT_PAGE_SIZE), _MAX_PAGE_SIZE))
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return page, per_page, total_pages
+
+
 def _prepare_scans(page: int = 1, per_page: int = _DEFAULT_PAGE_SIZE) -> list[dict]:
     """Load *page* of scans with diffs and format timestamps."""
     offset = max(0, (page - 1) * per_page)
@@ -1193,6 +1493,38 @@ def _prepare_scans(page: int = 1, per_page: int = _DEFAULT_PAGE_SIZE) -> list[di
     for s in scans:
         s["scan_time"] = _fmt_time(s.get("scan_time", ""))
     return scans
+
+
+_CVE_ID = re.compile(r"CVE-\d{4}-\d{4,}")
+
+
+def _alert_filters() -> dict:
+    """network / ip / severity filters from the query string.
+
+    Empty values mean "no filter". An unknown severity is ignored rather
+    than rejected, so a stale bookmark still shows every alert.
+    """
+    severity = (request.args.get("severity") or "").upper() or None
+    return {
+        "network":  request.args.get("network") or None,
+        "ip":       request.args.get("ip") or None,
+        "severity": severity if severity in CVE_SEVERITIES else None,
+    }
+
+
+def _alert_for_display(alert: dict) -> dict:
+    """Add the NVD link and a readable detection time to a stored alert.
+
+    The link is built only from a well-formed CVE identifier: the id comes
+    from NVD data, and anything else is shown as escaped text, never as an
+    href. created_at is SQLite's UTC timestamp, so it is labelled as such.
+    """
+    cve_id = alert.get("cve_id") or ""
+    alert["nvd_url"] = (f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+                        if _CVE_ID.fullmatch(cve_id) else None)
+    created = alert.get("created_at") or ""
+    alert["detected"] = f"{created[:16]} UTC" if created else "—"
+    return alert
 
 
 def _summarize(scans: list[dict]) -> dict:
@@ -1282,33 +1614,33 @@ def logout():
 @login_required
 def index():
     """Render the main HTML dashboard with pagination."""
-    try:
-        page = max(1, int(request.args.get("page", 1)))
-    except (TypeError, ValueError):
-        page = 1
-    try:
-        per_page = int(request.args.get("per_page", _DEFAULT_PAGE_SIZE))
-    except (TypeError, ValueError):
-        per_page = _DEFAULT_PAGE_SIZE
-    per_page = max(1, min(per_page, _MAX_PAGE_SIZE))
-
-    total      = count_scans()
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page       = min(page, total_pages)
+    total = count_scans()
+    page, per_page, total_pages = _read_pagination(total, strict=False)
+    page  = min(page, total_pages)   # a page past the end shows the last one
 
     scans = _prepare_scans(page=page, per_page=per_page)
     stats = _summarize(scans)
 
+    # CVE alerts feed the summary tile and the per-host badges on the cards.
+    alerts = summarize_cve_alerts()
+    critical = alerts["by_severity"].get("CRITICAL", 0)
+    high     = alerts["by_severity"].get("HIGH", 0)
+    cve = {"total": alerts["total"], "critical": critical, "high": high,
+           "urgent": bool(critical or high)}
+
     return render_template_string(
         _DASHBOARD_TEMPLATE,
-        scans       = scans,
-        stats       = stats,
-        page        = page,
-        per_page    = per_page,
-        total       = total,
-        total_pages = total_pages,
-        has_prev    = page > 1,
-        has_next    = page < total_pages,
+        scans          = scans,
+        stats          = stats,
+        page           = page,
+        per_page       = per_page,
+        total          = total,
+        total_pages    = total_pages,
+        has_prev       = page > 1,
+        has_next       = page < total_pages,
+        cve            = cve,
+        cve_hosts      = alerts["by_host"],
+        severity_class = _SEVERITY_CLASS,
     )
 
 
@@ -1319,37 +1651,66 @@ def help_page():
     return render_template_string(_HELP_TEMPLATE)
 
 
+@app.route("/alerts")
+@login_required
+def alerts_page():
+    """CVE alerts stored by CVE Watcher, most urgent first, with optional filters."""
+    filters = _alert_filters()
+    alerts = [_alert_for_display(a) for a in list_cve_alerts(**filters)]
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "OTHER": 0}
+    for a in alerts:
+        counts[a["severity"] if a["severity"] in counts else "OTHER"] += 1
+    return render_template_string(
+        _ALERTS_TEMPLATE,
+        alerts         = alerts,
+        counts         = counts,
+        filters        = filters,
+        filtered       = any(filters.values()),
+        networks       = summarize_cve_alerts()["networks"],
+        severities     = CVE_SEVERITIES,
+        severity_class = _SEVERITY_CLASS,
+    )
+
+
+@app.route("/api/alerts")
+@login_required
+def api_alerts():
+    """CVE alerts as a JSON array, most urgent first; same filters as /alerts.
+
+    notified_key is internal notification bookkeeping and is left out.
+    """
+    return jsonify([{k: v for k, v in a.items() if k != "notified_key"}
+                    for a in list_cve_alerts(**_alert_filters())])
+
+
 @app.route("/api/reports")
 @login_required
 def api_reports():
     """Return scans as a JSON array for integrations.
 
-    Without ``page``/``per_page`` this keeps the original contract and
-    returns the full history (bounded in practice by db_retention_days).
-    Passing either parameter opts into pagination.
+    Without ``page``/``per_page`` the response is the full history (bounded
+    in practice by db_retention_days), so integrations that do not paginate
+    receive every scan. Passing either parameter opts into pagination.
     """
     if "page" not in request.args and "per_page" not in request.args:
         data = get_all_scans()
         response = jsonify(data)
         response.headers["X-Total-Count"] = str(len(data))
         return response
-    try:
-        page = max(1, int(request.args.get("page", 1)))
-        per_page = max(1, min(int(request.args.get("per_page", _DEFAULT_PAGE_SIZE)), _MAX_PAGE_SIZE))
-    except (TypeError, ValueError):
-        abort(400, description="page and per_page must be integers")
     total = count_scans()
-    pages = max(1, (total + per_page - 1) // per_page)
-    if page > pages:
-        data = []
-    else:
-        data = get_all_scans(limit=per_page, offset=(page - 1) * per_page)
+    page, per_page, total_pages = _read_pagination(total, strict=True)
+    # Past the last page the window is empty; the headers still report where.
+    data = [] if page > total_pages else get_all_scans(limit=per_page,
+                                                       offset=(page - 1) * per_page)
     response = jsonify(data)
     response.headers["X-Total-Count"] = str(total)
     response.headers["X-Page"] = str(page)
     response.headers["X-Per-Page"] = str(per_page)
-    if page < pages:
-        response.headers["Link"] = f'<{url_for("api_reports", page=page + 1, per_page=per_page)}>; rel="next"'
+    if page < total_pages:
+        # Absolute URL (_external) built from the request host. RFC 8288 allows
+        # a relative target, but some HTTP clients only follow absolute URLs.
+        next_url = url_for("api_reports", page=page + 1, per_page=per_page, _external=True)
+        response.headers["Link"] = f'<{next_url}>; rel="next"'
     return response
 
 

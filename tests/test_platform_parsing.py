@@ -1,4 +1,4 @@
-"""Platform command parsing and timeout regressions, without real commands."""
+"""Platform command parsing and timeout handling, without running real commands."""
 import subprocess
 from types import SimpleNamespace
 
@@ -17,7 +17,7 @@ def test_nmcli_preserves_colons_and_backslashes(monkeypatch):
 
 
 @pytest.mark.parametrize("function", [utils._get_wifi_info_termux, utils._get_wifi_info_nmcli,
-                                     utils._get_wifi_info_iwconfig, utils._get_local_ip])
+                                     utils._get_wifi_info_iw, utils._get_local_ip])
 def test_platform_timeouts_return_no_connection(monkeypatch, function):
     def timeout(cmd, **kwargs):
         assert 0 < kwargs["timeout"] <= 10

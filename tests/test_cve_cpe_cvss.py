@@ -18,7 +18,7 @@ def cpe(vendor_product: str, version: str, update: str = "*") -> str:
     return f"cpe:2.3:a:{vendor_product}:{version}:{update}:*:*:*:*:*:*"
 
 
-# ── #5: version / update split and MySQL vendor ─────────────────────
+# ── version / update split and MySQL vendor ─────────────────────────
 
 @pytest.mark.parametrize("product, version, expected", [
     # The release suffix goes in the update field, as in the dictionary.
@@ -37,7 +37,7 @@ def test_cpe_version_and_vendor(product, version, expected):
     assert build_cpe_name(product, version) == expected
 
 
-# ── #6: real nmap product strings reach the map ─────────────────────
+# ── real nmap product strings reach the map ─────────────────────────
 
 @pytest.mark.parametrize("product, vendor_product", [
     ("PostgreSQL DB",          "postgresql:postgresql"),
@@ -77,7 +77,7 @@ def test_missing_version_has_no_cpe():
     assert build_cpe_name("OpenSSH", "") is None
 
 
-# ── #4: CVSS extraction ─────────────────────────────────────────────
+# ── CVSS extraction ─────────────────────────────────────────────────
 
 def parse_metrics(metrics) -> tuple:
     out = _parse_nvd_payload({"vulnerabilities": [

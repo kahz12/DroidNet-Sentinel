@@ -12,7 +12,12 @@ A host's risk is derived from the set of its open TCP ports:
 Both modules.sentinel.evaluate_risk (Rich-decorated) and
 core.database.save_scan / get_*_with_diffs build on top of
 classify_risk(); changes here propagate everywhere.
+
+It is also the single place that tells port lines from markers
+(is_port_line / is_scan_error), for every module that reads scan results.
 """
+
+import re
 
 # Frozensets so callers cannot mutate the canonical sets by accident.
 _CRITICAL: frozenset[str] = frozenset({
@@ -36,6 +41,23 @@ _MEDIUM: frozenset[str] = frozenset({
 
 _CLOSED_MARKER = "Shield intact"
 
+# deep_scan writes either port lines ("80/tcp open http nginx 1.18.0") or a
+# marker in their place: _CLOSED_MARKER when nothing is exposed, "Error" or
+# "Error: <why>" when the host could not be assessed. A port line's banner is
+# free text and can itself contain those words ("Apache httpd (Error page)"),
+# so markers are told apart by their exact form, never by searching a word.
+_PORT_LINE = re.compile(r"\d+/(?:tcp|udp)\s+open\b")
+
+
+def is_port_line(entry) -> bool:
+    """True for an open-port line such as "80/tcp open http nginx 1.18.0"."""
+    return isinstance(entry, str) and bool(_PORT_LINE.match(entry))
+
+
+def is_scan_error(entry) -> bool:
+    """True for the markers of a host that could not be assessed."""
+    return isinstance(entry, str) and (entry == "Error" or entry.startswith("Error:"))
+
 
 def classify_risk(ports: list[str]) -> str:
     """
@@ -49,7 +71,7 @@ def classify_risk(ports: list[str]) -> str:
     """
     if not ports or ports == [_CLOSED_MARKER]:
         return "MINIMAL"
-    if any(entry.startswith("Error") for entry in ports):
+    if any(is_scan_error(entry) for entry in ports):
         return "UNKNOWN"
 
     level = "LOW"
@@ -64,4 +86,4 @@ def classify_risk(ports: list[str]) -> str:
     return level
 
 
-__all__ = ["classify_risk"]
+__all__ = ["classify_risk", "is_port_line", "is_scan_error"]

@@ -81,15 +81,26 @@ def test_unknown_port_lines_render_as_block_lines(html):
     assert re.search(r"\.ports \.unknown-line\s*\{[^}]*display:\s*block", html)
 
 
-@pytest.mark.parametrize("path", ["/", "/help"])
+@pytest.mark.parametrize("path", ["/", "/help", "/alerts"])
 def test_every_risk_class_used_is_styled(path):
     # Each page carries its own <style>; a class used without a rule renders
-    # as plain uncoloured text (the Help risk table used to do this).
+    # as plain uncoloured text, so every r-* class a page uses must be defined
+    # in that page (the risk colours live in the shared CSS for this reason).
+    # One alert per severity, so the alert pill and badge classes are in use.
+    for i, severity in enumerate(("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")):
+        db.save_cve_alert(cve_id=f"CVE-2026-{i:04}", severity=severity, score=None,
+                          service="svc 1.0", ip=f"192.0.2.{i + 1}", summary="s",
+                          impact=None, network="lab")
+    db.save_scan("lab", "20261109_120000", {"192.0.2.1": ["80/tcp open http"]})
     client = dash.app.test_client()
     with client.session_transaction() as sess:
         sess["authenticated"] = True
-    page = client.get(path).get_data(as_text=True)
-    for cls in ("r-critical", "r-medium", "r-low", "r-minimal", "r-unknown"):
+    resp = client.get(path)
+    # An error page uses no r-* classes and would pass vacuously.
+    assert resp.status_code == 200
+    page = resp.get_data(as_text=True)
+    assert "r-unknown" in page
+    for cls in ("r-critical", "r-high", "r-medium", "r-low", "r-minimal", "r-unknown"):
         if re.search(r'class="[^"]*\b' + cls + r'\b', page):
             assert re.search(r"(?m)^\s*\." + cls + r"\s*\{[^}]*color:", page), \
                 f"{path} uses .{cls} but defines no colour for it"

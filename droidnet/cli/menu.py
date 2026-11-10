@@ -85,7 +85,7 @@ _RECON_ITEMS = [
     ("2", "Sentinel — Daemon mode",
         "Continuous background scanning with alerts.",       "bold green"),
     ("3", "Hunter — Exploit lookup",
-        "Match the latest report against Exploit-DB.",       "bold cyan"),
+        "Match the latest scan against Exploit-DB.",         "bold cyan"),
     ("4", "CVE Watcher",
         "Cross-check the network against recent CVEs.",      "bold cyan"),
 ]
@@ -198,8 +198,8 @@ def _help_features() -> Panel:
                   "Same as scan, repeated on a fixed cadence.",
                   "Sends Telegram alerts on changes.")
     table.add_row("Hunter",
-                  "Matches the latest scan against the local Exploit-DB.",
-                  "Requires `searchsploit`.")
+                  "Matches the latest scan against Exploit-DB.",
+                  "Uses `searchsploit`, or the Vulners API without it.")
     table.add_row("CVE Watcher",
                   "Queries the NVD for CVEs that match found services.",
                   "Needs internet access.")
@@ -282,15 +282,16 @@ def _help_cli() -> Panel:
     body = Text.assemble(
         "Every menu option also has a non-interactive equivalent — useful "
         "for cron jobs and scripts:\n\n",
-        ("  python main.py scan         ",  "cyan"), "Single scan\n",
-        ("  python main.py daemon       ",  "cyan"), "Continuous scan\n",
-        ("  python main.py hunt         ",  "cyan"), "Run Hunter\n",
-        ("  python main.py cve          ",  "cyan"), "Run CVE Watcher\n",
-        ("  python main.py dashboard    ",  "cyan"), "Start the web UI\n",
-        ("  python main.py reports      ",  "cyan"), "List saved reports\n",
-        ("  python main.py spoof IP GW  ",  "cyan"), "Manual ARP cut\n",
-        ("  python main.py deauth ...   ",  "cyan"), "Manual deauth\n",
-        ("  python main.py db purge     ",  "cyan"), "Prune old scans\n\n",
+        ("  python main.py scan            ",  "cyan"), "Single scan\n",
+        ("  python main.py daemon          ",  "cyan"), "Continuous scan\n",
+        ("  python main.py hunt            ",  "cyan"), "Run Hunter\n",
+        ("  python main.py cve             ",  "cyan"), "Run CVE Watcher (last 120 days)\n",
+        ("  python main.py cve --all-time  ",  "cyan"), "Full CVE audit, any date\n",
+        ("  python main.py dashboard       ",  "cyan"), "Start the web UI\n",
+        ("  python main.py reports         ",  "cyan"), "List saved reports\n",
+        ("  python main.py spoof IP GW     ",  "cyan"), "Manual ARP cut\n",
+        ("  python main.py deauth ...      ",  "cyan"), "Manual deauth\n",
+        ("  python main.py db purge        ",  "cyan"), "Prune old scans\n\n",
         "Add ",
         ("--help", "bold cyan"),
         " to any subcommand to see its flags.",
@@ -387,9 +388,22 @@ def _run_spoofer_interactive() -> None:
     poison(target_ip, gateway_ip, iface)
 
 
+def _ask_full_audit() -> bool:
+    """Ask whether to audit against CVEs of any date. Default is NO (recent only)."""
+    answer = Prompt.ask(
+        "[bold]Full audit: include CVEs of any publication date?[/bold] "
+        "[dim](default: only the last 120 days)[/dim]",
+        choices=["y", "n"],
+        default="n",
+        show_choices=True,
+    )
+    return answer.lower() == "y"
+
+
 def _run_cve_watcher() -> None:
     from droidnet.modules.cve_watcher import run_cve_watcher
-    run_cve_watcher(show_history=True)
+    days_back = None if _ask_full_audit() else 120
+    run_cve_watcher(days_back=days_back, show_history=True)
 
 
 def _run_deauther_interactive() -> None:

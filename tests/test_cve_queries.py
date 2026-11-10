@@ -1,4 +1,4 @@
-"""Offline regression tests for pagination, failed queries and applicability."""
+"""NVD pagination, failed queries and CVE applicability, tested offline."""
 from datetime import datetime, timedelta
 from unittest.mock import Mock
 
@@ -75,14 +75,17 @@ def test_failed_query_is_reported_incomplete(offline, monkeypatch, capsys):
     assert "No matching CVEs" not in output
 
 
-def test_keyword_fallback_is_a_candidate(offline, monkeypatch):
+def test_description_match_is_a_candidate(offline, monkeypatch):
+    # Not analysed by NVD yet (no CPE match possible), but its description
+    # names nginx with a range covering the detected 1.18.0.
     save = setup_watcher(monkeypatch)
     match = {"cve_id": "CVE-2026-0001", "severity": "HIGH", "score": 8.0,
-             "description": "remote code execution"}
+             "description": "nginx before 1.20.0 allows remote code execution",
+             "analysed": False}
     monkeypatch.setattr(cve, "query_nvd", Mock(side_effect=[[], [match]]))
     result = cve.run_cve_watcher()
     assert result.complete
     assert result[0]["match_type"] == "candidate"
-    assert "version applicability unverified" in result[0]["impact"]
-    assert "version applicability unverified" in save.call_args.kwargs["impact"]
+    assert "not yet confirmed by NVD" in result[0]["impact"]
+    assert "not yet confirmed by NVD" in save.call_args.kwargs["impact"]
     assert "candidate" in cve._build_telegram_report(result, "test")

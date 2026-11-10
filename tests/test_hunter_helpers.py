@@ -31,6 +31,5 @@ def test_hunter_retries_errors_but_caches_successful_empty_results(monkeypatch):
 def test_each_hunter_run_refreshes_cache(monkeypatch):
     monkeypatch.setattr(hunter, "_EXPLOIT_CACHE", {"nginx": [{"Title": "stale"}]})
     monkeypatch.setattr(hunter, "_searchsploit_path", lambda: "searchsploit")
-    monkeypatch.setattr(hunter, "get_latest_report", lambda: None)
-    hunter.run_hunter()
+    hunter.run_hunter()   # the isolated history database holds no scan
     assert not hunter._EXPLOIT_CACHE

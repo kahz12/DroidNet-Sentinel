@@ -2,7 +2,8 @@
 # pip install -r requirements.txt
 
 # Core
-# Compatible ranges: allow security patches without major version jumps.
+# Compatible ranges: any newer release within the same major version is
+# accepted, so security updates install without breaking API changes.
 requests>=2.31,<3
 rich>=13.7,<14
 flask>=3.0,<4

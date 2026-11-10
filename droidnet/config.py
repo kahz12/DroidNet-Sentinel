@@ -30,9 +30,10 @@ NVD_CACHE_DIR = BASE_DIR / "nvd_cache"
 CHECK_INTERVAL = 300  # seconds between daemon scan cycles
 RESCAN_HOURS   = 6    # hours before re-scanning the same network
 
-# ── Telegram C2 ───────────────────────────────────────────────────
-# Reads from env vars; falls back to placeholder strings that the
-# notifier module treats as "not configured" → silent no-op.
+# ── Telegram alerts ───────────────────────────────────────────────
+# Read from env vars. The placeholder defaults are what the notifier
+# checks for to mean "not configured": Telegram delivery is then skipped
+# and only local notifications fire.
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "TOKEN_DE_BOTFATHER")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ID_NUMERICO")
 
@@ -73,7 +74,7 @@ def _validate_config(raw: dict) -> dict:
     Coerce *raw* (parsed JSON) to the declared _CONFIG_SCHEMA.
 
     Drops bad keys/elements, fills missing keys with defaults, prints one
-    warning per problem so the user can fix config.json.
+    warning per problem so the user knows what to correct in config.json.
     Returns a new dict — never raises.
     """
     if not isinstance(raw, dict):

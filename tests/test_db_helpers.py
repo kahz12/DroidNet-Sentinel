@@ -58,7 +58,8 @@ def test_purge_deletes_old_scans(tmp_path: Path, monkeypatch):
     db = tmp_path / "test.db"
     monkeypatch.setattr("droidnet.core.database.DB_PATH", db)
 
-    # Reimport to pick up the patched DB_PATH inside the connection helper.
+    # The connection helper reads DB_PATH on every call, so the path set by
+    # monkeypatch above applies to everything below.
     from droidnet.core import database as dbmod
     dbmod.init_db()
 
@@ -113,13 +114,12 @@ def test_cve_alert_dedup_includes_network(tmp_path: Path, monkeypatch):
     common = dict(cve_id="CVE-2024-0001", severity="HIGH", score=7.5,
                   service="http", ip="192.168.1.10", summary="x", impact=None)
 
-    id_home   = dbmod.save_cve_alert(network="home",   **common)
-    id_office = dbmod.save_cve_alert(network="office", **common)
-    id_dup    = dbmod.save_cve_alert(network="home",   **common)  # exact repeat
+    dbmod.save_cve_alert(network="home",   **common)
+    dbmod.save_cve_alert(network="office", **common)
+    dbmod.save_cve_alert(network="home",   **common)  # exact repeat
 
-    assert id_home is not None
-    assert id_office is not None      # different network → new alert
-    assert id_dup is None             # same network → deduped
+    networks = sorted(r["network"] for r in dbmod.get_cve_alerts())
+    assert networks == ["home", "office"]   # one row per network, repeat deduped
 
 
 # ── legacy Spanish → English data migration (init_db) ─────────────

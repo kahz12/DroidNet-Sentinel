@@ -16,23 +16,21 @@ Public API:
     get_known_ips(network)      → all IPs ever seen on a network
 """
 
-import re
 import sqlite3
 from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
-from droidnet.core.risk import classify_risk  # re-exported below for back-compat
-
-
-# A "real" port line from sentinel.deep_scan starts with "<port>/<proto> open".
-# Anything else ("Shield intact", "Error", "Error: timeout") is a marker —
-# not an actual service.
-_OPEN_PORT_RE = re.compile(r"^\d+/(?:tcp|udp)\s+open\b")
+# classify_risk labels every stored host; callers may also import it from here.
+from droidnet.core.risk import classify_risk, is_port_line
 
 
 def _has_open_ports(ports: list[str]) -> bool:
-    """True iff *ports* contains at least one real open-port line."""
-    return any(_OPEN_PORT_RE.match(entry) for entry in ports if entry)
+    """True iff *ports* contains at least one real open-port line.
+
+    Markers ("Shield intact", "Error: timeout") are not services; see
+    core.risk.is_port_line for how the two are told apart.
+    """
+    return any(is_port_line(entry) for entry in ports)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -100,6 +98,8 @@ def init_db() -> None:
                 network     TEXT    NOT NULL,
                 scan_id     INTEGER REFERENCES scans(id) ON DELETE SET NULL,
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                match_type   TEXT,  -- 'cpe' (version-confirmed) or 'candidate'
+                notified_key TEXT,  -- "SEVERITY|match_type" last announced; NULL = pending
                 UNIQUE(cve_id, ip, service, network)
             );
 
@@ -160,6 +160,19 @@ def init_db() -> None:
             c.execute("ALTER TABLE cve_alerts_migrated RENAME TO cve_alerts")
             c.execute("CREATE INDEX IF NOT EXISTS idx_cve_network_created "
                       "ON cve_alerts(network, created_at DESC)")
+
+        # Schema migration: notification state for CVE alerts. Rows that
+        # predate these columns are backfilled as already announced (not
+        # pending), so adding the columns to a populated database does not
+        # re-notify its whole history. Each backfill runs only with its ADD.
+        columns = {r["name"] for r in c.execute("PRAGMA table_info(cve_alerts)")}
+        if "match_type" not in columns:
+            c.execute("ALTER TABLE cve_alerts ADD COLUMN match_type TEXT")
+            c.execute("UPDATE cve_alerts SET match_type = CASE "
+                      "WHEN impact LIKE 'Candidate match:%' THEN 'candidate' ELSE 'cpe' END")
+        if "notified_key" not in columns:
+            c.execute("ALTER TABLE cve_alerts ADD COLUMN notified_key TEXT")
+            c.execute(f"UPDATE cve_alerts SET notified_key = {_NOTIFIED_KEY_SQL}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -288,7 +301,7 @@ def get_all_scans_with_diffs(
     scan on the same network.
 
     Args:
-        limit  : maximum number of scans to return. None = no limit (legacy).
+        limit  : maximum number of scans to return; None returns every scan.
         offset : number of scans to skip (pagination).
 
     Extra keys per scan:
@@ -380,6 +393,23 @@ def get_known_ips(network: str) -> set[str]:
 #  CVE alerts
 # ══════════════════════════════════════════════════════════════════
 
+# What an announcement covered: "SEVERITY|match_type" (see _needs_notification).
+_NOTIFIED_KEY_SQL = "severity || '|' || COALESCE(match_type, 'cpe')"
+_ALERT_KEY_WHERE  = "cve_id = ? AND ip = ? AND service = ? AND network = ?"
+
+
+def _needs_notification(notified_key: str | None, severity: str, match_type: str) -> bool:
+    """New alerts, severity changes and candidate→CPE confirmations are announced.
+
+    A score tweak within the same severity is not, and neither is a CPE match
+    later found only by keyword (the CVE was already confirmed once).
+    """
+    if not notified_key:
+        return True
+    old_severity, _, old_type = notified_key.partition("|")
+    return old_severity != severity or (old_type == "candidate" and match_type == "cpe")
+
+
 def save_cve_alert(
     cve_id: str,
     severity: str,
@@ -390,21 +420,49 @@ def save_cve_alert(
     impact: str | None,
     network: str,
     scan_id: int | None = None,
-) -> int | None:
+    match_type: str = "cpe",
+) -> bool:
     """
-    Persist a CVE alert. Returns the row ID, or None if it already exists.
+    Insert or refresh the alert keyed on (cve_id, ip, service, network).
+
+    A re-detected alert takes the latest severity, score, texts, match type
+    and scan, so a CVE first stored as UNKNOWN is updated once NVD scores it.
+
+    Returns True when the alert should be announced: it was never announced,
+    its severity changed, or a candidate match is now CPE-confirmed. Call
+    mark_cve_alerts_notified() once the announcement has been delivered.
     """
+    key = (cve_id, ip, service, network)
     with _conn() as c:
-        try:
-            cur = c.execute(
-                """INSERT INTO cve_alerts
-                   (cve_id, severity, score, service, ip, summary, impact, network, scan_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (cve_id, severity, score, service, ip, summary, impact, network, scan_id),
-            )
-            return cur.lastrowid
-        except sqlite3.IntegrityError:
-            return None
+        c.execute(
+            """INSERT INTO cve_alerts
+               (cve_id, severity, score, service, ip, summary, impact, network,
+                scan_id, match_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cve_id, ip, service, network) DO UPDATE SET
+                   severity   = excluded.severity,
+                   score      = excluded.score,
+                   summary    = excluded.summary,
+                   impact     = excluded.impact,
+                   scan_id    = excluded.scan_id,
+                   match_type = excluded.match_type""",
+            (cve_id, severity, score, service, ip, summary, impact, network,
+             scan_id, match_type),
+        )
+        row = c.execute(
+            f"SELECT notified_key FROM cve_alerts WHERE {_ALERT_KEY_WHERE}", key,
+        ).fetchone()
+    return _needs_notification(row["notified_key"] if row else None, severity, match_type)
+
+
+def mark_cve_alerts_notified(keys) -> None:
+    """Record that the (cve_id, ip, service, network) alerts were announced
+    with their current severity and match type."""
+    with _conn() as c:
+        c.executemany(
+            f"UPDATE cve_alerts SET notified_key = {_NOTIFIED_KEY_SQL} WHERE {_ALERT_KEY_WHERE}",
+            list(keys),
+        )
 
 
 def get_cve_alerts(network: str | None = None, limit: int = 50) -> list[dict]:
@@ -421,6 +479,75 @@ def get_cve_alerts(network: str | None = None, limit: int = 50) -> list[dict]:
                 (limit,),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Severity labels CVE Watcher stores, most urgent first. Anything else sorts
+# after them. The SQL CASE is built from these literals only, never from input.
+CVE_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN")
+_SEVERITY_RANK_SQL = (
+    "CASE severity "
+    + " ".join(f"WHEN '{name}' THEN {rank}" for rank, name in enumerate(CVE_SEVERITIES))
+    + f" ELSE {len(CVE_SEVERITIES)} END"
+)
+
+
+def _severity_rank(severity: str) -> int:
+    return CVE_SEVERITIES.index(severity) if severity in CVE_SEVERITIES else len(CVE_SEVERITIES)
+
+
+def list_cve_alerts(network: str | None = None, ip: str | None = None,
+                    severity: str | None = None) -> list[dict]:
+    """Every stored CVE alert matching the filters, most urgent first.
+
+    Ordered by severity, then CVSS score (unscored last), then newest. A
+    None filter is not applied. Unlike get_cve_alerts(), which serves the
+    CLI's short recent-first history, this returns the full set: the
+    dashboard needs every alert of a host, however old.
+    """
+    clauses, params = [], []
+    for column, value in (("network", network), ("ip", ip), ("severity", severity)):
+        if value is not None:
+            clauses.append(f"{column} = ?")   # column names come from the tuple above, never from input
+            params.append(value)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT * FROM cve_alerts {where} ORDER BY {_SEVERITY_RANK_SQL}, "
+            "score IS NULL, score DESC, created_at DESC, cve_id",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def summarize_cve_alerts() -> dict:
+    """Alert counts for the dashboard's summary tile and per-host badges.
+
+    Returns:
+        total       : number of stored alerts.
+        by_severity : {"CRITICAL": n, "HIGH": n, ...} for the labels present.
+        by_host     : {(network, ip): {"count": n, "worst": severity}}; the
+                      worst severity decides the badge colour.
+        networks    : sorted networks that have at least one alert.
+    """
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT network, ip, severity, COUNT(*) AS n FROM cve_alerts "
+            "GROUP BY network, ip, severity"
+        ).fetchall()
+    by_severity: dict[str, int] = {}
+    by_host: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        by_severity[row["severity"]] = by_severity.get(row["severity"], 0) + row["n"]
+        host = by_host.setdefault((row["network"], row["ip"]), {"count": 0, "worst": row["severity"]})
+        host["count"] += row["n"]
+        if _severity_rank(row["severity"]) < _severity_rank(host["worst"]):
+            host["worst"] = row["severity"]
+    return {
+        "total":       sum(by_severity.values()),
+        "by_severity": by_severity,
+        "by_host":     by_host,
+        "networks":    sorted({network for network, _ in by_host}),
+    }
 
 
 def purge_old_scans(days: int) -> int:

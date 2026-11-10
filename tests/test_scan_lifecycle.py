@@ -1,4 +1,4 @@
-"""Regression tests with simulated processes; never send network packets."""
+"""Scan and response lifecycle with simulated processes; no network packets are sent."""
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -13,7 +13,9 @@ from droidnet.core.risk import classify_risk
     (1, "", "Error: nmap failed"),
     (0, "broken", "Error"),
     (0, '<nmaprun><runstats><finished exit="success"/></runstats></nmaprun>', "Error: host unreachable"),
-    (0, '<nmaprun><host><status state="up"/><ports><extraports state="filtered" count="100"/></ports></host><runstats><finished exit="success"/></runstats></nmaprun>', "Error: inconclusive port states"),
+    # A firewall dropping every probe exposes nothing: same as all-closed.
+    (0, '<nmaprun><host><status state="up"/><ports><extraports state="filtered" count="100"/></ports></host><runstats><finished exit="success"/></runstats></nmaprun>', "Shield intact"),
+    (0, '<nmaprun><host><status state="up"/><ports/></host><runstats><finished exit="success"/></runstats></nmaprun>', "Error: inconclusive port states"),
     (0, '<nmaprun><host><status state="up"/><ports><extraports state="closed" count="100"/></ports></host><runstats><finished exit="success"/></runstats></nmaprun>', "Shield intact"),
     (0, '<nmaprun><host><status state="up"/><ports><port protocol="tcp" portid="80"><state state="open"/><service name="http" product="nginx" version="1.18.0"/></port></ports></host><runstats><finished exit="success"/></runstats></nmaprun>', "80/tcp open http nginx 1.18.0"),
 ])

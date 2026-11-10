@@ -2,8 +2,9 @@
 
 Hostnames (DHCP / mDNS), vendors, banners and SSIDs are controlled by other
 devices; exploit titles come from Exploit-DB / Vulners; reports are JSON on
-disk. A stray "[/x]" in any of them raised MarkupError and aborted the run,
-and a valid "[link=...]" was silently turned into a terminal hyperlink.
+disk. A stray "[/x]" in any of them would raise MarkupError and abort the run,
+and a valid "[link=...]" would turn into a terminal hyperlink, so each value is
+escaped before it reaches Rich.
 """
 import io
 import json
@@ -15,6 +16,7 @@ import requests
 from rich.console import Console
 
 from droidnet.cli import menu
+from droidnet.core import database as db
 from droidnet.core.markup import esc
 from droidnet.modules import hunter, sentinel
 from droidnet.platform import utils
@@ -61,16 +63,19 @@ def test_sentinel_table_renders_device_fields_literally(monkeypatch):
     assert "Closed" in text and "[blue]" not in text
 
 
-def test_sentinel_scan_line_prints_ssid_literally(monkeypatch):
+@pytest.mark.parametrize("info, shown", [
+    ({"ssid": "Free[/wifi]", "ip": "192.0.2.2"}, "Scanning network: Free[/wifi]"),
+    ({"ip": "192.0.2.2"},                        "Scanning network: Unknown network"),
+])
+def test_sentinel_scan_line_prints_ssid_literally(monkeypatch, info, shown):
     text_of = _record(monkeypatch, sentinel)
     monkeypatch.setattr(sentinel, "init_db", lambda: None)
-    monkeypatch.setattr(sentinel, "get_wifi_info",
-                        lambda: {"ssid": "Free[/wifi]", "ip": "192.0.2.2"})
+    monkeypatch.setattr(sentinel, "get_wifi_info", lambda: info)
     monkeypatch.setattr(sentinel, "load_user_config", lambda: {"db_retention_days": 0})
     # Discovery failure ends an interactive run right after the scan line.
     monkeypatch.setattr(sentinel, "ping_sweep", lambda *_: None)
     sentinel.run_sentinel(interactive=True)
-    assert "Free[/wifi]" in text_of()
+    assert shown in text_of()
 
 
 def test_console_notification_fallback_prints_ssid_literally(monkeypatch):
@@ -87,12 +92,10 @@ def test_console_notification_fallback_prints_ssid_literally(monkeypatch):
 
 # ── Hunter ─────────────────────────────────────────────────────────
 
-def test_hunter_renders_banner_and_exploit_fields_literally(monkeypatch, tmp_path):
+def test_hunter_renders_network_banner_and_exploit_fields_literally(monkeypatch):
     text_of = _record(monkeypatch, hunter)
-    report = tmp_path / f"lab{FILE_LINK}_20261109_120000.json"
-    report.write_text(json.dumps({"network": "lab", "targets": {
-        "192.0.2.5": ["80/tcp open http Evil[/x] httpd 1.0"]}}))
-    monkeypatch.setattr(hunter, "get_latest_report", lambda: str(report))
+    db.save_scan(f"lab{LINK}", "20261109_120000",
+                 {"192.0.2.5": ["80/tcp open http Evil[/x] httpd 1.0"]})
     monkeypatch.setattr(hunter, "_searchsploit_path", lambda: "/usr/bin/searchsploit")
     monkeypatch.setattr(hunter, "_hunt_exploits_local", lambda _q: [
         {"Title": "t[/t] [red]x", "Path": "p[/p]", "Date_Published": "d[/d]"},
@@ -100,17 +103,9 @@ def test_hunter_renders_banner_and_exploit_fields_literally(monkeypatch, tmp_pat
     ])
     hunter.run_hunter()
     text = text_of()
-    for token in (f"lab{FILE_LINK}", "Evil[/x] httpd 1.0", "t[/t] [red]x", "p[/p]", "d[/d]"):
+    for token in (f"lab{LINK}", "Evil[/x] httpd 1.0", "t[/t] [red]x", "p[/p]", "d[/d]"):
         assert token in text, token
     assert "Unknown" in text  # null title from an API falls back to a label
-
-
-def test_hunter_unreadable_report_message_is_literal(monkeypatch, tmp_path):
-    text_of = _record(monkeypatch, hunter)
-    missing = tmp_path / "gone[" / "g].json"
-    monkeypatch.setattr(hunter, "get_latest_report", lambda: str(missing))
-    hunter.run_hunter()
-    assert "gone[/g].json" in text_of()
 
 
 def test_hunter_error_messages_escape_query(monkeypatch):

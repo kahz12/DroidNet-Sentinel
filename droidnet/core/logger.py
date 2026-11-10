@@ -25,11 +25,16 @@ The file handler always logs at DEBUG to keep a complete trail.
 """
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from droidnet.config import BASE_DIR
 
-_LOG_DIR  = BASE_DIR / "logs"
+# DROIDNET_LOG_DIR moves the log file elsewhere — a read-only install, or the
+# test suite, which must never write to the project's real logs/ directory.
+# Read once at import: the file handler is opened on the first get_logger().
+_LOG_DIR  = Path(os.environ["DROIDNET_LOG_DIR"]) if os.environ.get("DROIDNET_LOG_DIR") else BASE_DIR / "logs"
 _LOG_FILE = _LOG_DIR / "droidnet.log"
 
 _FILE_FORMAT  = "%(asctime)s %(levelname)-7s %(name)s :: %(message)s"

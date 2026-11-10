@@ -7,7 +7,7 @@ Subcommands (preferred):
     python main.py hunt
     python main.py dashboard [--expose]
     python main.py reports
-    python main.py cve
+    python main.py cve [--all-time]
     python main.py spoof <VICTIM_IP> <GATEWAY_IP> [--iface IFACE]
     python main.py deauth <TARGET_MAC|broadcast> <BSSID> --iface IFACE
                           [--channel N] [--count N]
@@ -80,14 +80,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument("--auto-cut", action="store_true",
                           help="Run an ARP cut on hosts marked as untrusted.")
 
-    sub.add_parser("hunt", help="Look up exploits for the latest report")
+    sub.add_parser("hunt", help="Look up exploits for the latest scan")
 
     p_dash = sub.add_parser("dashboard", help="Start the web dashboard (Flask)")
     p_dash.add_argument("--expose", action="store_true",
                         help="Bind 0.0.0.0 (LAN) instead of 127.0.0.1.")
 
     sub.add_parser("reports", help="List saved reports")
-    sub.add_parser("cve",     aliases=["cve-watch"], help="Monitor CVEs")
+    p_cve = sub.add_parser("cve", aliases=["cve-watch"], help="Monitor CVEs")
+    p_cve.add_argument("--all-time", action="store_true",
+                       help="Full audit: match the detected versions against CVEs of any\n"
+                            "publication date, not only those from the last 120 days.")
 
     p_spoof = sub.add_parser("spoof", help="ARP-spoof a single IP")
     p_spoof.add_argument("victim",  metavar="VICTIM_IP")
@@ -152,9 +155,9 @@ def _run_reports() -> None:
     list_reports()
 
 
-def _run_cve() -> None:
+def _run_cve(all_time: bool = False) -> None:
     from droidnet.modules.cve_watcher import run_cve_watcher
-    run_cve_watcher(show_history=True)
+    run_cve_watcher(days_back=None if all_time else 120, show_history=True)
 
 
 def _run_spoof(victim: str, gateway: str, iface: str | None) -> bool:
@@ -212,7 +215,7 @@ def handle_args(args: argparse.Namespace) -> bool:
         _run_reports()
         return True
     if cmd in ("cve", "cve-watch"):
-        _run_cve()
+        _run_cve(args.all_time)
         return True
     if cmd == "spoof":
         return _run_spoof(args.victim, args.gateway, args.iface)

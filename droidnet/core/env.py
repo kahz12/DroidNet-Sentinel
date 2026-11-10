@@ -64,25 +64,31 @@ def display_capabilities(env_state: dict) -> None:
 
     console.print("\n[bold white]  Modules:[/bold white]")
 
+    # Each module reports one of three states:
+    #   "ok"       — fully available, no note.
+    #   "degraded" — runs in a reduced mode; the note says which.
+    #   "missing"  — cannot run; the note says what it needs.
+    # Hunter is the degraded case: without searchsploit it still works through
+    # the online Vulners fallback, so flagging it as missing would send users
+    # after a package they may not have (exploitdb has no Termux build).
+    has = env_state["tools"].get
+    hunter = "ok" if has("searchsploit", False) else "degraded"
     modules = [
-        ("Sentinel (Network scan)",      True,
-         "Always available"),
-        ("Hunter (Exploit lookup)",      env_state["tools"].get("searchsploit", False),
-         "Requires searchsploit"),
-        ("Dashboard (Command Center)",   True,
-         "Always available"),
+        ("Sentinel (Network scan)",    "ok",     ""),
+        ("Hunter (Exploit lookup)",    hunter,   "online fallback: Vulners, rate-limited"),
+        ("Dashboard (Command Center)", "ok",     ""),
         ("Spoofer (ARP MitM)",
-         env_state["raw_sockets_enabled"] and env_state["tools"].get("arpspoof", False),
+         "ok" if env_state["raw_sockets_enabled"] and has("arpspoof", False) else "missing",
          "Requires root + arpspoof"),
-        ("Deauther (802.11 DoS)",        env_state["monitor_mode_capable"],
+        ("Deauther (802.11 DoS)",
+         "ok" if env_state["monitor_mode_capable"] else "missing",
          "Requires root + iw + monitor mode"),
     ]
 
-    for name, available, note in modules:
-        if available:
-            console.print(f"    [green]+[/green] {name}")
-        else:
-            console.print(f"    [red]x[/red] {name} [dim]({note})[/dim]")
+    marks = {"ok": "[green]+[/green]", "degraded": "[yellow]~[/yellow]", "missing": "[red]x[/red]"}
+    for name, state, note in modules:
+        suffix = f" [dim]({note})[/dim]" if state != "ok" else ""
+        console.print(f"    {marks[state]} {name}{suffix}")
 
     console.print("\n[bold white]  Tools:[/bold white]")
     for tool, available in env_state["tools"].items():

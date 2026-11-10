@@ -31,8 +31,8 @@ from droidnet.config       import (
 from droidnet.core.database  import init_db, save_scan, purge_old_scans
 from droidnet.core.logger    import get_logger
 from droidnet.core.markup    import esc
-from droidnet.core.risk      import classify_risk
-from droidnet.core.notifier  import send_alert, escape_markdown
+from droidnet.core.risk      import classify_risk, is_scan_error
+from droidnet.core.notifier  import send_alert, escape_html
 from droidnet.platform.utils import get_default_iface, get_default_gateway, get_wifi_info
 
 log = get_logger(__name__)
@@ -107,7 +107,7 @@ def display_results_table(
                 ip_cell, hostname, vendor, risk,
                 "[blue]Closed[/blue]", "Protected device",
             )
-        elif results and "Error" in results[0]:
+        elif results and is_scan_error(results[0]):
             table.add_row(
                 ip_cell, hostname, vendor, "[white]???[/white]",
                 "[red]Failed[/red]", "Scan error",
@@ -197,43 +197,107 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict] | None:
 
 _DEEP_SCAN_WORKERS = 16
 
+# Each host is scanned in two nmap passes with separate budgets. Port
+# discovery over the top 100 TCP ports takes a second or two on a LAN host.
+# Version detection is the slow part: services that never answer nmap's
+# probes make every probe wait out its timeout — a home router's two HTTP
+# ports took 124 s — so it gets a much larger budget of its own.
+_PORT_SCAN_TIMEOUT    = 120
+_VERSION_SCAN_TIMEOUT = 300
+
+# Port states that mean "nothing answers here": closed ports reply with a
+# reset, filtered ones are dropped by a firewall. Either way the port exposes
+# no service to this network.
+_UNEXPOSED_STATES = {"closed", "filtered"}
+
+
+def _nmap_host(ip: str, nmap_args: list[str], timeout: int):
+    """Run nmap against *ip* with XML output.
+
+    Returns the <host> element, or an "Error: ..." marker string when nmap
+    fails, the run is incomplete or the host is down. Timeouts and malformed
+    XML propagate to the caller, which knows what a failure costs.
+    """
+    proc = subprocess.run(
+        ["nmap", *nmap_args, "-oX", "-", ip],
+        capture_output=True, text=True, timeout=timeout,
+        stdin=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        log.warning("nmap failed ip=%s exit=%d stderr=%s", ip, proc.returncode, proc.stderr.strip())
+        return "Error: nmap failed"
+    root = ET.fromstring(proc.stdout)
+    finished = root.find("runstats/finished")
+    if finished is None or finished.get("exit") != "success":
+        return "Error: incomplete scan"
+    host = root.find("host")
+    if host is None or host.find("status") is None or host.find("status").get("state") != "up":
+        return "Error: host unreachable"
+    return host
+
+
+def _parse_ports(host) -> tuple[dict[str, str], list[str | None]]:
+    """Open ports as {"80/tcp": "80/tcp open http nginx 1.18.0"} plus every state seen.
+
+    The port id is parsed as an int so only digits ever reach a later
+    ``nmap -p`` argument.
+    """
+    open_ports: dict[str, str] = {}
+    states = [extra.get("state") for extra in host.findall("ports/extraports")]
+    for port in host.findall("ports/port"):
+        state = port.find("state")
+        state_name = state.get("state") if state is not None else None
+        states.append(state_name)
+        if state_name != "open":
+            continue
+        key = f"{int(port.get('portid'))}/{port.get('protocol')}"
+        service = port.find("service")
+        attrs = service.attrib if service is not None else {}
+        banner = " ".join(attrs.get(k, "") for k in ("product", "version")).strip()
+        if attrs.get("extrainfo"):
+            banner += f" ({attrs['extrainfo']})"
+        open_ports[key] = f"{key} open {attrs.get('name', 'unknown')} {banner}".strip()
+    return open_ports, states
+
+
+def _with_versions(ip: str, open_ports: dict[str, str]) -> list[str]:
+    """Add product/version strings to *open_ports* with ``nmap -sV`` on just those ports.
+
+    The open ports alone already decide the host's risk, so any failure here
+    (timeout, nmap error, bad XML) keeps the first-pass lines and only loses
+    the version strings. A port that stopped answering between the two passes
+    also keeps its first-pass line.
+    """
+    port_list = ",".join(key.split("/")[0] for key in open_ports)
+    try:
+        host = _nmap_host(ip, ["-sV", "-T4", "-p", port_list], _VERSION_SCAN_TIMEOUT)
+        if isinstance(host, str):
+            raise RuntimeError(host)
+        versioned, _ = _parse_ports(host)
+    except Exception as exc:
+        log.warning("version detection failed ip=%s (%s); keeping the port list",
+                    ip, type(exc).__name__ if isinstance(exc, subprocess.TimeoutExpired) else exc)
+        return list(open_ports.values())
+    return [versioned.get(key, line) for key, line in open_ports.items()]
+
 
 def _scan_one(ip: str) -> tuple[str, list[str]]:
-    """Run nmap -F -sV -T4 on a single IP. Returns (ip, ports_or_marker)."""
+    """Scan one host: ports first (-F -T4), then versions on the open ones (-sV).
+
+    Returns (ip, lines) where lines are open-port lines, ["Shield intact"]
+    when nothing is exposed, or a single "Error: ..." marker when the port
+    scan itself could not tell.
+    """
     try:
-        proc = subprocess.run(
-            ["nmap", "-F", "-sV", "-T4", "-oX", "-", ip],
-            capture_output=True, text=True, timeout=120,
-            stdin=subprocess.DEVNULL,
-        )
-        if proc.returncode != 0:
-            log.warning("nmap failed ip=%s exit=%d stderr=%s", ip, proc.returncode, proc.stderr.strip())
-            return ip, ["Error: nmap failed"]
-        root = ET.fromstring(proc.stdout)
-        finished = root.find("runstats/finished")
-        if finished is None or finished.get("exit") != "success":
-            return ip, ["Error: incomplete scan"]
-        host = root.find("host")
-        if host is None or host.find("status") is None or host.find("status").get("state") != "up":
-            return ip, ["Error: host unreachable"]
-        ports = []
-        states = [extra.get("state") for extra in host.findall("ports/extraports")]
-        for port in host.findall("ports/port"):
-            state = port.find("state")
-            state_name = state.get("state") if state is not None else None
-            states.append(state_name)
-            if state_name != "open":
-                continue
-            service = port.find("service")
-            attrs = service.attrib if service is not None else {}
-            banner = " ".join(attrs.get(key, "") for key in ("product", "version")).strip()
-            if attrs.get("extrainfo"):
-                banner += f" ({attrs['extrainfo']})"
-            ports.append(f"{port.get('portid')}/{port.get('protocol')} open {attrs.get('name', 'unknown')} {banner}".strip())
-        if ports:
-            return ip, ports
-        if states and all(state == "closed" for state in states):
+        host = _nmap_host(ip, ["-F", "-T4"], _PORT_SCAN_TIMEOUT)
+        if isinstance(host, str):
+            return ip, [host]
+        open_ports, states = _parse_ports(host)
+        if open_ports:
+            return ip, _with_versions(ip, open_ports)
+        if states and all(state in _UNEXPOSED_STATES for state in states):
             return ip, ["Shield intact"]
+        # No port data at all, or states nmap could not settle (open|filtered).
         return ip, ["Error: inconclusive port states"]
     except subprocess.TimeoutExpired:
         return ip, ["Error: timeout"]
@@ -241,15 +305,26 @@ def _scan_one(ip: str) -> tuple[str, list[str]]:
         return ip, ["Error"]
 
 
+def _scan_into(pool: ThreadPoolExecutor, ips: list[str], results: dict) -> None:
+    """Scan *ips* on *pool*, storing each host's lines in *results* as it finishes."""
+    for fut in as_completed([pool.submit(_scan_one, ip) for ip in ips]):
+        ip, lines = fut.result()
+        results[ip] = lines
+
+
 def deep_scan(live_ips: list[str]) -> dict:
     """
-    Fast port and version scan on each live IP, in parallel.
+    Port and version scan on each live IP, in parallel.
 
-    Flags: -F (top 100 ports), -sV (version detection), -T4 (aggressive timing).
-    Up to 16 hosts in parallel (I/O-bound: the GIL is released during subprocess).
+    Per host (see _scan_one): -F -T4 over the top 100 TCP ports, then -sV
+    on the ports found open. Up to 16 hosts in parallel (I/O-bound: the GIL
+    is released while nmap runs). Hosts that come back with an error marker
+    ("Error" or "Error: ...") are scanned once more after all the others
+    have finished.
 
     Returns:
-        {ip: [open port lines]} or {ip: ["Shield intact"]} for closed hosts.
+        {ip: [open port lines]}, {ip: ["Shield intact"]} for closed hosts,
+        or {ip: [error marker]} for hosts that failed both attempts.
     """
     if not live_ips:
         return {}
@@ -258,13 +333,23 @@ def deep_scan(live_ips: list[str]) -> dict:
     results: dict = {}
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
-        futures = [pool.submit(_scan_one, ip) for ip in live_ips]
-        for fut in as_completed(futures):
-            ip, ports = fut.result()
-            results[ip] = ports
+        _scan_into(pool, live_ips, results)
+
+        # Phones and tablets with Wi-Fi power saving can answer discovery and
+        # then doze off before their port scan, so nmap reports them down and
+        # they would stay UNKNOWN for the whole cycle. Every host left with an
+        # error marker (down, timeout, inconclusive states) gets one more scan
+        # once all first attempts are done; a second failure is kept as the
+        # result, so a host that is really gone costs one extra attempt only.
+        retry = [ip for ip, lines in results.items() if lines and is_scan_error(lines[0])]
+        if retry:
+            log.info("rescanning hosts that could not be assessed: %s", ", ".join(retry))
+            rprint(f"[dim][*] Rescanning {len(retry)} host(s) that could not be assessed...[/dim]")
+            _scan_into(pool, retry, results)
     finally:
-        # On Ctrl+C do not start queued scans. Running subprocesses retain
-        # their 120-second timeout; wait for them before reporting shutdown.
+        # On Ctrl+C do not start queued scans. Running nmap passes keep their
+        # own timeouts (_PORT_SCAN_TIMEOUT / _VERSION_SCAN_TIMEOUT); wait for
+        # them before reporting shutdown.
         pool.shutdown(wait=True, cancel_futures=True)
     return results
 
@@ -397,6 +482,16 @@ def save_report(ssid: str, scan_data: dict) -> Path:
 #  Main scan loop
 # ══════════════════════════════════════════════════════════════════
 
+def _build_sentinel_report(ssid: str, live_count: int) -> str:
+    """Telegram (HTML mode) summary of one scan. The SSID is attacker-controlled."""
+    return (
+        "🛡️ <b>DroidNet Sentinel Report</b>\n\n"
+        f"📡 <b>Network:</b> <code>{escape_html(ssid)}</code>\n"
+        f"🎯 <b>Live targets:</b> {live_count}\n"
+        "⚠️ <b>Check the Command Center for details.</b>"
+    )
+
+
 def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
     """Run scans and ensure all automatic responses stop on exit."""
     jobs = AutoCutSession()
@@ -455,7 +550,7 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
             last_purge_time = now_for_purge
 
         if info:
-            current_ssid = info.get("ssid", "Desconocida")
+            current_ssid = info.get("ssid", "Unknown network")
             my_ip        = info.get("ip")
             now          = datetime.now()
 
@@ -466,7 +561,7 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
             )
 
             if should_scan and my_ip and my_ip != "0.0.0.0":
-                rprint(f"\n[bold green][*][/bold green] Scan en curso: [bold white]{esc(current_ssid)}[/bold white]")
+                rprint(f"\n[bold green][*][/bold green] Scanning network: [bold white]{esc(current_ssid)}[/bold white]")
                 log.info("scan started network=%s my_ip=%s auto_cut=%s",
                          current_ssid, my_ip, auto_cut)
 
@@ -496,16 +591,10 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
                     log.warning("scan empty network=%s (no hosts detected)",
                                 current_ssid)
 
-                ssid_md = escape_markdown(current_ssid)
                 send_alert(
                     title       = "Sentinel Alert",
                     local_msg   = f"{len(live_ips)} hosts analysed on {current_ssid}",
-                    telegram_msg= (
-                        f"🛡️ *DroidNet Sentinel Report*\n\n"
-                        f"📡 *Network:* `{ssid_md}`\n"
-                        f"🎯 *Live targets:* {len(live_ips)}\n"
-                        f"⚠️ *Check the Command Center for details.*"
-                    ),
+                    telegram_msg= _build_sentinel_report(current_ssid, len(live_ips)),
                 )
 
                 last_ssid, last_scan_time = current_ssid, now
