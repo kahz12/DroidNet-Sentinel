@@ -199,7 +199,8 @@ def _help_features() -> Panel:
                   "Sends Telegram alerts on changes.")
     table.add_row("Hunter",
                   "Matches the latest scan against Exploit-DB.",
-                  "Uses `searchsploit`, or the Vulners API without it.")
+                  "`searchsploit`; without it Vulners (API key) "
+                  "or the Exploit-DB catalogue.")
     table.add_row("CVE Watcher",
                   "Queries the NVD for CVEs that match found services.",
                   "Needs internet access.")

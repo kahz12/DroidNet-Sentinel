@@ -37,6 +37,13 @@ RESCAN_HOURS   = 6    # hours before re-scanning the same network
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "TOKEN_DE_BOTFATHER")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ID_NUMERICO")
 
+# ── Hunter sources when searchsploit is not installed ─────────────
+# With a Vulners API key Hunter queries Vulners (its API refuses keyless
+# clients). Without one it downloads the public Exploit-DB catalogue into
+# EXPLOITDB_DIR on first use and searches it offline.
+VULNERS_API_KEY = os.environ.get("VULNERS_API_KEY", "").strip()
+EXPLOITDB_DIR   = BASE_DIR / "exploitdb_cache"
+
 
 _CONFIG_SCHEMA: dict = {
     # key                 (type,  element_type or None for non-list, default)

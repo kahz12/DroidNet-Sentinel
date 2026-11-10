@@ -2,21 +2,23 @@
 Exploit Lookup Module — cross-references scan results with Exploit-DB.
 
 Takes the most recent scan with detected services from the history database
-(the same scan CVE Watcher analyses) and searches each service against the
-local Exploit-DB via searchsploit. If searchsploit is unavailable, it falls
-back to the public Vulners API.
+(the same scan CVE Watcher analyses) and looks each service up in Exploit-DB.
 
-Requires:
-    searchsploit — part of the exploitdb project (recommended)
-    Linux: sudo apt install exploitdb
-    Termux: exploitdb is NOT available as a Termux package.
-            Clone the repository manually:
-              git clone https://gitlab.com/exploit-database/exploitdb.git
-              ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
-    Update DB: searchsploit -u
-
-Online fallback: if searchsploit is not found in PATH, the public Vulners
-API is used (rate-limited, no API key).
+Sources, in order of preference:
+    1. searchsploit — the local Exploit-DB (recommended, fully offline).
+         Kali: sudo apt install exploitdb        (update with: searchsploit -u)
+         Ubuntu, Debian and others have no package. Clone the repository
+         into /opt/exploitdb, the path its bundled .searchsploit_rc points
+         at, and link the script into PATH:
+           sudo git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb
+           sudo ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit
+         Termux has no /opt: clone anywhere, then copy .searchsploit_rc to
+         ~/.searchsploit_rc and change its path_array entries to the clone.
+    2. Vulners — when VULNERS_API_KEY is set. Its API refuses keyless
+       clients (they get a Cloudflare challenge, HTTP 403).
+    3. The Exploit-DB catalogue — downloaded once and searched offline
+       (see droidnet.modules.exploitdb). Also used when a Vulners lookup
+       fails, so a wrong key or an outage still yields an answer.
 """
 
 import json
@@ -28,9 +30,10 @@ from rich           import print as rprint
 from rich.console   import Console
 from rich.table     import Table
 
+from droidnet import config
 from droidnet.core.database import init_db, get_latest_scan_with_services
 from droidnet.core.markup import esc
-from droidnet.core.risk import is_port_line
+from droidnet.modules import exploitdb
 from droidnet.modules.cve_watcher import parse_service_info
 
 console = Console()
@@ -89,40 +92,58 @@ def _hunt_exploits_local(query: str) -> list[dict] | None:
     return results if isinstance(results, list) and all(isinstance(item, dict) for item in results) else None
 
 
-def _hunt_exploits_online(query: str) -> list[dict] | None:
-    """
-    Online fallback via the public Vulners API (no API key, rate-limited).
+_VULNERS_URL = "https://vulners.com/api/v3/search/lucene/"
 
-    Normalises the response to the same shape as local searchsploit:
-    [{"Title": ..., "Path": ..., "Date_Published": ...}]
+
+def _redact(text: str, secret: str) -> str:
+    return text.replace(secret, "<redacted>") if secret else text
+
+
+def _hunt_exploits_vulners(query: str, api_key: str) -> list[dict] | None:
     """
+    Search Vulners' copy of Exploit-DB with an API key.
+
+    The key travels in the X-Api-Key header and the query in a POST body, so
+    neither can appear in a URL that an exception message would print; any
+    error text is still scrubbed of the key before it is shown. Normalises
+    hits to searchsploit's shape: [{"Title", "Path", "Date_Published"}].
+    Returns None when the lookup fails, so the caller can try the catalogue.
+    """
+    def failed(reason) -> None:
+        rprint(f"[yellow]Vulners lookup failed for '{esc(query)}': "
+               f"{esc(_redact(str(reason), api_key))}[/yellow]")
+
     try:
-        resp = requests.get(
-            "https://vulners.com/api/v3/search/lucene/",
-            params={"query": f"type:exploitdb AND {query}", "size": 10},
-            timeout=10,
-            headers={"User-Agent": "DroidNet-Sentinel"},
+        resp = requests.post(
+            _VULNERS_URL,
+            json={"query": f"type:exploitdb AND {query}", "size": 10},
+            headers={"X-Api-Key": api_key, "User-Agent": "DroidNet-Sentinel"},
+            timeout=15,
         )
-        resp.raise_for_status()
+    except requests.RequestException as exc:
+        return failed(exc)
+    try:
         payload = resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        rprint(f"[yellow]Online fallback failed for '{esc(query)}': {esc(exc)}[/yellow]")
-        return None
+    except ValueError:            # e.g. a Cloudflare challenge page
+        return failed(f"HTTP {resp.status_code}")
 
     data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("result") != "OK":
+        # Vulners explains a refusal ("Unknown api key") in data.error.
+        reason = data.get("error") if isinstance(data, dict) else None
+        return failed(reason or f"HTTP {resp.status_code}")
     if not isinstance(data, dict) or not isinstance(data.get("search"), list):
-        return None
+        return failed("unexpected response")
 
     results: list[dict] = []
     for item in data["search"]:
-        if not isinstance(item, dict) or not isinstance(item.get("_source"), dict):
-            return None
-        src = item.get("_source", {})
-        published = (src.get("published") or "")[:10]
+        src = item.get("_source") if isinstance(item, dict) else None
+        if not isinstance(src, dict):
+            return failed("unexpected response")
         results.append({
-            "Title":          src.get("title", "Unknown"),
-            "Path":           src.get("href") or src.get("id", ""),
-            "Date_Published": published,
+            "Title":          src.get("title") or "Unknown",
+            "Path":           src.get("href") or src.get("id") or "",
+            "Date_Published": (src.get("published") or "")[:10],
         })
     return results
 
@@ -132,8 +153,9 @@ def hunt_exploits(query: str) -> list[dict] | None:
     Run an exploit search for *query* and return results ordered
     by descending publication date (most recent first).
 
-    Uses local searchsploit if available, otherwise falls back to
-    online search (Vulners). Memoises by query to avoid duplicate requests.
+    Source order: searchsploit when installed; otherwise Vulners when
+    VULNERS_API_KEY is set, then the offline Exploit-DB catalogue (also when
+    Vulners fails). Memoises by query to avoid duplicate requests.
     """
     if query in _EXPLOIT_CACHE:
         return _EXPLOIT_CACHE[query]
@@ -141,7 +163,11 @@ def hunt_exploits(query: str) -> list[dict] | None:
     if _searchsploit_path():
         results = _hunt_exploits_local(query)
     else:
-        results = _hunt_exploits_online(query)
+        results = None
+        if config.VULNERS_API_KEY:
+            results = _hunt_exploits_vulners(query, config.VULNERS_API_KEY)
+        if results is None:
+            results = exploitdb.search(query)
 
     if results is None:
         return None  # Transient failures must be retried, never cached.
@@ -169,10 +195,9 @@ def run_hunter() -> None:
     rprint("[bold red][☠][/bold red] Starting DroidNet Hunter module...")
 
     if not _searchsploit_path():
-        rprint(
-            "[yellow][!] searchsploit not found in PATH; "
-            "using online fallback (Vulners, rate-limited).[/yellow]"
-        )
+        source = ("the Vulners API (VULNERS_API_KEY)" if config.VULNERS_API_KEY else
+                  "the Exploit-DB catalogue (downloaded once, then searched offline)")
+        rprint(f"[yellow][!] searchsploit not found in PATH; using {source}.[/yellow]")
 
     # Hunter may be the first thing run on a fresh install, before any scan
     # has created the schema (idempotent).
@@ -187,18 +212,18 @@ def run_hunter() -> None:
            f"(ID: {scan['id']}, {esc(scan['scan_time'])})")
 
     for ip, services in scan["targets"].items():
-        # Hosts holding only markers ("Shield intact", "Error: ...") have no
-        # service to look up.
-        if not any(is_port_line(s) for s in services):
+        # Markers ("Shield intact", "Error: ...") and port lines without a
+        # product banner ("8008/tcp open http") give nothing to look up; a
+        # host with only those is skipped rather than listed with no queries.
+        # The same product on two ports is looked up once.
+        queries = [q for q in dict.fromkeys(clean_service_name(raw) for raw in services)
+                   if q and len(q) >= 4]
+        if not queries:
             continue
 
         rprint(f"\n[bold green][+][/bold green] Analysing: [bold cyan]{esc(ip)}[/bold cyan]")
 
-        for raw in services:
-            query = clean_service_name(raw)
-            if not query or len(query) < 4:
-                continue
-
+        for query in queries:
             rprint(f"  [*] Query: [yellow]{esc(query)}[/yellow]")
             exploits = hunt_exploits(query)
 
@@ -208,9 +233,9 @@ def run_hunter() -> None:
                 table.add_column("Exploit Title", style="white")
                 table.add_column("Path / EDB-ID", style="dim",   justify="right")
 
-                # Exploit-DB / Vulners fields are external data, and table
-                # cells are parsed as markup. A null field from the API
-                # falls back to a label instead of rendering "None".
+                # Exploit-DB, Vulners and catalogue fields are external data,
+                # and table cells are parsed as markup. A null field from an
+                # API falls back to a label instead of rendering "None".
                 for ex in exploits[:5]:
                     table.add_row(
                         esc(ex.get("Date_Published") or "—"),

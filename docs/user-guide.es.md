@@ -121,7 +121,7 @@ Watcher leen el último escaneo guardado, y el panel lee todo el historial.
 
 | Paquete  | Para qué sirve                                | ¿Obligatorio? |
 |----------|-----------------------------------------------|---------------|
-| requests | Cliente HTTP para NVD y Vulners               | Sí            |
+| requests | Cliente HTTP para NVD, Vulners y Exploit-DB   | Sí            |
 | rich     | Interfaz de terminal (tablas, colores, menú)  | Sí            |
 | flask    | El panel web                                  | Sí            |
 | scapy    | Deauther, y el modo de reserva del Spoofer    | Opcional      |
@@ -181,8 +181,9 @@ Limitaciones en Termux:
 - La mayoría de los chips Wi-Fi integrados de Android no admiten modo monitor
   ni inyección de paquetes, por lo que el Deauther suele necesitar un
   adaptador USB externo.
-- El módulo Hunter necesita `searchsploit`, que hay que clonar manualmente
-  (más abajo).
+- `searchsploit` no está empaquetado para Termux. Hunter funciona sin él (ver
+  [Hunter](#102-hunter-búsqueda-de-exploits)); para usarlo, clónalo
+  manualmente (más abajo).
 
 ### Verificar la instalación
 
@@ -203,9 +204,9 @@ Cada una habilita un módulo. Instala solo lo que necesites.
 |-------------------------------|------------------------------------|----------------------------------|
 | `nmap`                        | Todo el escaneo (obligatoria)      | `apt install nmap`               |
 | `iw`                          | Nombre de la red Wi-Fi; modo monitor | `apt install iw`               |
-| `nmcli` (NetworkManager)      | Nombre de la red Wi-Fi (preferido) | normalmente ya está presente     |
+| `nmcli` (NetworkManager)      | Nombre de la red Wi-Fi (preferido) | no hace falta si tienes `iw`     |
 | `libnotify-bin`               | Notificaciones de escritorio       | `apt install libnotify-bin`      |
-| `searchsploit` (exploitdb)    | Hunter                             | `apt install exploitdb`          |
+| `searchsploit` (exploitdb)    | Hunter (opcional, ver 10.2)        | Kali: `apt install exploitdb`; otras: ver notas |
 | `dsniff` (`arpspoof`)         | Spoofer (solo Linux)               | `apt install dsniff`             |
 | `aircrack-ng` (`aireplay-ng`) | Prueba de inyección del Deauther   | `apt install aircrack-ng`        |
 | `scapy`                       | Deauther; reserva del Spoofer      | `pip install scapy`              |
@@ -213,15 +214,33 @@ Cada una habilita un módulo. Instala solo lo que necesites.
 Notas:
 
 - La herramienta lee el nombre de la red Wi-Fi primero con `nmcli` y, si no
-  está disponible, con `iw`. Sin ninguno de los dos, cada red se guarda con
-  una etiqueta genérica y el historial no puede distinguir unas de otras.
-- En Termux, `searchsploit` se instala clonando el repositorio de Exploit-DB
-  y enlazando el binario en tu PATH:
+  está disponible, con `iw`. Basta con uno de los dos. Sin ninguno, cada red
+  se guarda con una etiqueta genérica y el historial no puede distinguir unas
+  de otras.
+- `searchsploit` solo está empaquetado en Kali (`apt install exploitdb`). En
+  Ubuntu, Debian y otras distribuciones, clona el repositorio de Exploit-DB en
+  `/opt/exploitdb`, la ruta que espera su `.searchsploit_rc`, y enlaza el
+  script en tu `PATH`:
 
   ```bash
-  git clone https://gitlab.com/exploit-database/exploitdb.git
-  ln -s $PWD/exploitdb/searchsploit $PREFIX/bin/searchsploit
+  sudo git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb
+  sudo ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit
+  searchsploit vsftpd 2.3.4    # comprobación: muestra la puerta trasera de vsftpd 2.3.4
   ```
+
+  Para actualizarlo más adelante: `sudo searchsploit -u`.
+- En Termux no existe `/opt`. Clona el repositorio en tu carpeta personal,
+  enlaza el script y dale a `searchsploit` una copia de su configuración que
+  apunte al clon (lee `~/.searchsploit_rc` antes que la suya):
+
+  ```bash
+  git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git ~/exploitdb
+  ln -s ~/exploitdb/searchsploit $PREFIX/bin/searchsploit
+  sed "s|/opt/exploitdb|$HOME/exploitdb|" ~/exploitdb/.searchsploit_rc > ~/.searchsploit_rc
+  ```
+
+  En cualquier caso, Hunter funciona sin `searchsploit` (ver
+  [Hunter](#102-hunter-búsqueda-de-exploits)).
 
 ---
 
@@ -396,6 +415,7 @@ descartan con un aviso.
 | `SENTINEL_PASS`    | Contraseña del panel                                | se genera y se guarda en `~/.sentinel/credentials` (modo 0600) |
 | `SENTINEL_SECRET`  | Clave secreta de sesión de Flask                    | aleatoria en cada arranque                  |
 | `NVD_API_KEY`      | Clave de API de NVD para subir el límite de peticiones del CVE Watcher | sin definir (límite más lento) |
+| `VULNERS_API_KEY`  | Clave de API de Vulners; fuente de Hunter sin searchsploit | sin definir (se usa el catálogo de Exploit-DB) |
 | `DROIDNET_LOG_DIR` | Directorio del archivo de log                       | `logs/` bajo la raíz del proyecto           |
 
 Define las que necesites antes de arrancar, por ejemplo:
@@ -408,8 +428,22 @@ export TELEGRAM_CHAT_ID="987654321"
 python main.py dashboard
 ```
 
-Para que persistan, añade las líneas `export` al perfil de tu shell
-(`~/.bashrc` o `~/.zshrc`).
+Para que persistan, ponlas en un archivo `.env` en la raíz del proyecto, una
+por línea con la forma `NOMBRE=valor` (se aceptan `export`, comillas y
+comentarios con `#`):
+
+```bash
+VULNERS_API_KEY="tu-clave"
+TELEGRAM_TOKEN="123456:abcdef..."
+TELEGRAM_CHAT_ID="987654321"
+```
+
+El archivo se lee al arrancar y git lo ignora. Una variable ya definida en el
+entorno tiene prioridad sobre el archivo. Usa los nombres de variable de la
+tabla anterior; una línea que no sea `NOMBRE=valor` se ignora. Como el
+archivo guarda secretos, haz que solo tú puedas leerlo: `chmod 600 .env`.
+También puedes añadir las líneas `export` al perfil de tu shell (`~/.bashrc`
+o `~/.zshrc`).
 
 ---
 
@@ -462,10 +496,23 @@ Hunter lee el último escaneo guardado que encontró al menos un servicio,
 que es el mismo escaneo que analiza CVE Watcher, extrae el nombre del
 producto y la versión de cada servicio y busca en Exploit-DB. El escaneo se
 toma de la base de datos del historial, no de los archivos JSON de
-`reports/`. Si `searchsploit` está
-instalado se usa en local; si no, Hunter recurre a la API pública de Vulners
-(con límite de ritmo, sin clave). Muestra hasta cinco coincidencias por
-servicio. Una búsqueda fallida se informa como tal y se distingue de una
+`reports/`. Muestra hasta cinco coincidencias por servicio.
+
+Hunter usa la primera fuente disponible:
+
+1. **`searchsploit`**, si está instalado: el Exploit-DB local, sin conexión.
+2. **Vulners**, si `VULNERS_API_KEY` está definida. Vulners no responde a
+   clientes sin clave. La clave viaja en una cabecera de la petición, nunca
+   en una URL, y se elimina de cualquier mensaje de error.
+3. **El catálogo de Exploit-DB** en cualquier otro caso. Hunter descarga el
+   índice público de Exploit-DB (`files_exploits.csv`, unos 10 MB) en
+   `exploitdb_cache/` la primera vez y lo consulta sin conexión. Se revalida
+   una vez por semana, sin descargar nada mientras no cambie, y una copia
+   existente sigue funcionando sin internet. También se usa cuando falla una
+   consulta a Vulners.
+
+Igual que `searchsploit`, un exploit solo cuenta cuando su título cubre la
+versión detectada: dnsmasq 2.85 no coincide con "Dnsmasq < 2.78". Una búsqueda fallida se informa como tal y se distingue de una
 búsqueda con éxito que simplemente no encontró nada. Los resultados se
 almacenan en caché solo durante una ejecución de Hunter.
 
@@ -712,6 +759,7 @@ contrario.
 | `sentinel.db`               | Base de datos SQLite: escaneos, dispositivos, puertos y alertas de CVE. |
 | `reports/`                  | Un archivo JSON con marca de tiempo por escaneo, por portabilidad. |
 | `nvd_cache/`                | Respuestas de la NVD en caché (vigencia de 24 horas).        |
+| `exploitdb_cache/`          | Catálogo de Exploit-DB para Hunter (se revalida cada semana). |
 | `logs/droidnet.log`         | Archivo de log rotatorio (se puede cambiar con `DROIDNET_LOG_DIR`). |
 | `config.json`               | Configuración opcional (ver [Configuración](#9-configuración)). |
 | `~/.sentinel/credentials`   | Contraseña del panel generada automáticamente (modo 0600), en tu carpeta personal. |
@@ -819,14 +867,15 @@ escanear cuando cambia la red. Combínalo con las alertas de Telegram para
 enterarte de los cambios.
 
 **¿Necesita conexión a internet?**
-El escaneo y el panel funcionan sin conexión. Hunter (la reserva con
-Vulners) y CVE Watcher necesitan internet para llegar a sus fuentes de datos;
-el backend local `searchsploit` de Hunter funciona sin conexión.
+El escaneo y el panel funcionan sin conexión. CVE Watcher necesita internet
+para llegar a la NVD. Hunter funciona sin conexión con `searchsploit`, o con
+el catálogo de Exploit-DB una vez descargado; la fuente Vulners necesita
+internet.
 
 **¿De dónde salen los datos de vulnerabilidades?**
-CVE Watcher consulta la NVD del NIST. Hunter consulta el Exploit-DB local a
-través de `searchsploit`, o la API de Vulners cuando `searchsploit` no está
-instalado.
+CVE Watcher consulta la NVD del NIST. Hunter busca en Exploit-DB: en local
+con `searchsploit`, a través de la API de Vulners si hay clave, o en el
+catálogo de Exploit-DB descargado.
 
 **¿Una coincidencia de CVE garantiza que sea explotable?**
 No. Una coincidencia de CVE significa que la versión detectada cae dentro de

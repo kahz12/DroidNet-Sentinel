@@ -117,9 +117,9 @@ def test_hunter_error_messages_escape_query(monkeypatch):
     monkeypatch.setattr(hunter.subprocess, "run",
                         Mock(return_value=Mock(returncode=0, stdout="not json [/j]")))
     assert hunter._hunt_exploits_local(q) is None
-    monkeypatch.setattr(hunter.requests, "get",
+    monkeypatch.setattr(hunter.requests, "post",
                         Mock(side_effect=requests.ConnectionError("boom [/y]")))
-    assert hunter._hunt_exploits_online(q) is None
+    assert hunter._hunt_exploits_vulners(q, "test-key") is None
     assert text_of().count(q) >= 3
 
 

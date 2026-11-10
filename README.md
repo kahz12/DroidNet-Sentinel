@@ -35,8 +35,8 @@ a network you are not authorized to disrupt.
   / UNKNOWN) from a single shared rule.
 - **Diff history.** New hosts, disappeared hosts and port changes between
   consecutive scans.
-- **Exploit lookup.** Local Exploit-DB search via `searchsploit`, with a
-  Vulners API fallback.
+- **Exploit lookup.** Exploit-DB search via `searchsploit`, the Vulners API
+  (with a key) or the Exploit-DB catalogue, downloaded once and searched offline.
 - **CVE Watcher.** NVD cross-reference by CPE and by description, in a 120-day
   watch mode or a full audit of any date.
 - **Active response.** Manual or automatic ARP cut; 802.11 deauthentication.
@@ -44,6 +44,32 @@ a network you are not authorized to disrupt.
   alerts view filterable by network, host and severity, and an in-app guide.
 - **Alerting.** Desktop/Termux notifications and Telegram.
 - **Cross-platform.** One codebase on Android (Termux) and Linux.
+
+---
+
+## Screenshots
+
+Captured during a real audit. The network name, IP addresses and host names
+are redacted.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/02-interactive-menu.png" alt="Interactive menu and environment probe, run as root"><br><sub>Interactive menu and environment probe, run as root: every module available (only the Spoofer and the Deauther need root)</sub></td>
+    <td width="50%"><img src="docs/screenshots/03-network-scan.png" alt="Network scan results"><br><sub>Scan: risk, open ports and versions per host</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/04-cve-watcher.png" alt="CVE Watcher full audit"><br><sub>CVE Watcher: detected services matched against the NVD</sub></td>
+    <td><img src="docs/screenshots/05-hunter.png" alt="Hunter exploit lookup"><br><sub>Hunter: Exploit-DB lookup per service</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/07-dashboard.png" alt="Web dashboard"><br><sub>Dashboard: scan history and risk per host</sub></td>
+    <td><img src="docs/screenshots/08-cve-alerts.png" alt="CVE alerts page"><br><sub>CVE alerts, filterable by network, host and severity</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/06-dashboard-login.png" alt="Dashboard sign-in"><br><sub>Dashboard sign-in</sub></td>
+    <td><img src="docs/screenshots/01-cli-help.png" alt="Command-line help"><br><sub>Command-line help</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -113,7 +139,9 @@ Optional `config.json` at the project root:
 
 Key environment variables: `SENTINEL_USER` / `SENTINEL_PASS` (dashboard
 login), `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` (alerts), `NVD_API_KEY` (higher
-CVE rate limit). Full configuration reference:
+CVE rate limit), `VULNERS_API_KEY` (Hunter source without `searchsploit`).
+They can also be kept in a `.env` file at the project root, one `NAME=value`
+per line; the file is ignored by git. Full configuration reference:
 [user guide](docs/user-guide.en.md#9-configuration).
 
 ---
@@ -142,8 +170,8 @@ main.py
 ```
 
 Scan results are stored in `sentinel.db` (SQLite) and mirrored as timestamped
-JSON under `reports/`. NVD responses are cached in `nvd_cache/`; logs go to
-`logs/droidnet.log`.
+JSON under `reports/`. NVD responses are cached in `nvd_cache/` and Hunter's
+Exploit-DB catalogue in `exploitdb_cache/`; logs go to `logs/droidnet.log`.
 
 ---
 

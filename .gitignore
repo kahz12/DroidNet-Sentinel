@@ -31,6 +31,9 @@ reports/
 # ── Local NVD cache (CVE-Watcher) ─────────────────────────────────
 nvd_cache/
 
+# ── Exploit-DB catalogue downloaded by Hunter ─────────────────────
+exploitdb_cache/
+
 # ── Credentials and sensitive configuration ─────────────────────────
 .env
 *.env
