@@ -56,3 +56,16 @@ def test_path_is_preferred_over_sbin(tool_in, tmp_path):
     (tmp_path / "sbin" / "iw").write_text("#!/bin/sh\n")
     (tmp_path / "sbin" / "iw").chmod(0o755)
     assert utils.resolve_command("iw") == on_path
+
+
+def test_spoofer_finds_arpspoof_in_sbin_when_path_is_trimmed(tmp_path, monkeypatch):
+    from droidnet.modules import spoofer
+
+    sbin = tmp_path / "sbin"
+    sbin.mkdir()
+    exe = sbin / "arpspoof"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.setattr(utils, "_SBIN_DIRS", (str(sbin),))
+    assert spoofer._arpspoof_available() is True

@@ -13,11 +13,12 @@ Public API:
     get_all_scans()             → all scans + targets, newest first
     get_all_scans_with_diffs()  → same, plus diff vs previous scan
     get_scan_diff(scan_id)      → single scan + diff data
-    get_known_ips(network)      → all IPs ever seen on a network
 """
 
 import sqlite3
+import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from droidnet.config import DB_PATH
 from droidnet.core.logger import get_logger
@@ -54,6 +55,58 @@ def _conn():
         raise
     finally:
         conn.close()
+
+
+# Holds the active (context_manager, Connection) pair when inside
+# batch_transaction(). Opening the connection lazily on the first _shared_conn()
+# call means a batch with no writes — or one whose write helper is stubbed in
+# unit tests — never touches SQLite on disk.
+_batch_holder: ContextVar[list | None] = ContextVar("_batch_holder", default=None)
+
+
+@contextmanager
+def _shared_conn():
+    """Reuse the active batch connection when inside batch_transaction(),
+    otherwise open a standalone one-shot _conn() transaction."""
+    holder = _batch_holder.get()
+    if holder is None:
+        with _conn() as c:
+            yield c
+        return
+    if holder[0] is None:
+        cm = _conn()
+        holder[0] = (cm, cm.__enter__())
+    yield holder[0][1]
+
+
+@contextmanager
+def batch_transaction():
+    """Group multiple database writes into a single SQLite transaction.
+
+    Nested batch_transaction() blocks share the outermost transaction, and
+    the underlying connection is committed (or rolled back on exception) once
+    when the outermost block exits.
+    """
+    if _batch_holder.get() is not None:
+        yield
+        return
+    holder = [None]
+    token = _batch_holder.set(holder)
+    try:
+        yield
+    except BaseException:
+        if holder[0] is not None:
+            cm, _ = holder[0]
+            cm.__exit__(*sys.exc_info())
+            holder[0] = None
+        raise
+    else:
+        if holder[0] is not None:
+            cm, _ = holder[0]
+            cm.__exit__(None, None, None)
+            holder[0] = None
+    finally:
+        _batch_holder.reset(token)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -206,23 +259,36 @@ def _hosts_for_scan(c: sqlite3.Connection, scan_id: int) -> dict[str, list[str]]
     return _hosts_for_scans(c, [scan_id])[scan_id]
 
 
-def _hosts_for_scans(c: sqlite3.Connection, scan_ids) -> dict[int, dict[str, list[str]]]:
-    """Batch-load snapshots, including hosts without ports, in bounded chunks."""
+def _hosts_and_risks_for_scans(
+    c: sqlite3.Connection, scan_ids
+) -> tuple[dict[int, dict[str, list[str]]], dict[int, dict[str, str]]]:
+    """Batch-load snapshots and stored host risk labels in bounded chunks."""
     ids = list(dict.fromkeys(scan_ids))
-    result = {scan_id: {} for scan_id in ids}
+    targets = {scan_id: {} for scan_id in ids}
+    risks   = {scan_id: {} for scan_id in ids}
     for start in range(0, len(ids), 400):
         chunk = ids[start:start + 400]
         placeholders = ",".join("?" for _ in chunk)
         rows = c.execute(f"""
-            SELECT h.scan_id, h.ip, p.port_entry
+            SELECT h.scan_id, h.ip, h.risk, p.port_entry
             FROM hosts h LEFT JOIN ports p ON p.host_id = h.id
             WHERE h.scan_id IN ({placeholders}) ORDER BY h.id, p.id
         """, chunk)
         for row in rows:
-            ports = result[row["scan_id"]].setdefault(row["ip"], [])
+            scan_id = row["scan_id"]
+            ip      = row["ip"]
+            ports   = targets[scan_id].setdefault(ip, [])
+            if ip not in risks[scan_id]:
+                risks[scan_id][ip] = row["risk"]
             if row["port_entry"] is not None:
                 ports.append(row["port_entry"])
-    return result
+    return targets, risks
+
+
+def _hosts_for_scans(c: sqlite3.Connection, scan_ids) -> dict[int, dict[str, list[str]]]:
+    """Batch-load snapshots, including hosts without ports, in bounded chunks."""
+    targets, _ = _hosts_and_risks_for_scans(c, scan_ids)
+    return targets
 
 
 def _compute_diff(
@@ -341,13 +407,13 @@ def get_all_scans_with_diffs(
             FROM scans s ORDER BY s.id DESC LIMIT ? OFFSET ?
         """, (-1 if limit is None else int(limit), max(0, int(offset)))).fetchall()
         ids = {row["id"] for row in scans} | {row["previous_id"] for row in scans if row["previous_id"] is not None}
-        targets = _hosts_for_scans(c, ids)
+        targets, risks = _hosts_and_risks_for_scans(c, ids)
         result = []
 
         for scan in scans:
             d = dict(scan)
             d["targets"] = targets[d["id"]]
-            d["risks"]   = {ip: classify_risk(p) for ip, p in d["targets"].items()}
+            d["risks"]   = risks[d["id"]]
 
             prev_id = d.pop("previous_id")
             if prev_id is not None:
@@ -377,17 +443,19 @@ def get_scan_diff(scan_id: int) -> dict:
             return {}
 
         d = dict(row)
-        d["targets"] = _hosts_for_scan(c, scan_id)
-        d["risks"]   = {ip: classify_risk(p) for ip, p in d["targets"].items()}
-
         prev = c.execute("""
             SELECT id FROM scans
             WHERE network = ? AND id < ?
             ORDER BY id DESC LIMIT 1
         """, (d["network"], scan_id)).fetchone()
 
+        ids = [scan_id, prev["id"]] if prev else [scan_id]
+        targets, risks = _hosts_and_risks_for_scans(c, ids)
+        d["targets"] = targets[scan_id]
+        d["risks"]   = risks[scan_id]
+
         if prev:
-            prev_targets = _hosts_for_scan(c, prev["id"])
+            prev_targets = targets[prev["id"]]
             d["new_ips"], d["gone_ips"], d["port_changes"] = _compute_diff(
                 d["targets"], prev_targets
             )
@@ -397,18 +465,6 @@ def get_scan_diff(scan_id: int) -> dict:
             d["port_changes"] = {}
 
     return d
-
-
-def get_known_ips(network: str) -> set[str]:
-    """Return every IP ever seen on *network* across all historical scans."""
-    with _conn() as c:
-        rows = c.execute("""
-            SELECT DISTINCT h.ip
-              FROM hosts h
-              JOIN scans s ON s.id = h.scan_id
-             WHERE s.network = ?
-        """, (network,)).fetchall()
-    return {r["ip"] for r in rows}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -455,7 +511,7 @@ def save_cve_alert(
     mark_cve_alerts_notified() once the announcement has been delivered.
     """
     key = (cve_id, ip, service, network)
-    with _conn() as c:
+    with _shared_conn() as c:
         c.execute(
             """INSERT INTO cve_alerts
                (cve_id, severity, score, service, ip, summary, impact, network,
@@ -539,6 +595,15 @@ def list_cve_alerts(network: str | None = None, ip: str | None = None,
             params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_cve_alert_networks() -> list[str]:
+    """Sorted network names that have at least one stored CVE alert."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT DISTINCT network FROM cve_alerts ORDER BY network"
+        ).fetchall()
+    return [row["network"] for row in rows]
 
 
 def summarize_cve_alerts() -> dict:

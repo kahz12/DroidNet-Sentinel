@@ -56,6 +56,7 @@ from droidnet.core.database import (
     get_all_scans_with_diffs,
     get_scan_diff,
     count_scans,
+    list_cve_alert_networks,
     list_cve_alerts,
     summarize_cve_alerts,
 )
@@ -1658,17 +1659,23 @@ def help_page():
 def alerts_page():
     """CVE alerts stored by CVE Watcher, most urgent first, with optional filters."""
     filters = _alert_filters()
+    filtered = any(filters.values())
     alerts = [_alert_for_display(a) for a in list_cve_alerts(**filters)]
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "OTHER": 0}
     for a in alerts:
         counts[a["severity"] if a["severity"] in counts else "OTHER"] += 1
+    networks = (
+        list_cve_alert_networks()
+        if filtered
+        else sorted({a["network"] for a in alerts})
+    )
     return render_template_string(
         _ALERTS_TEMPLATE,
         alerts         = alerts,
         counts         = counts,
         filters        = filters,
-        filtered       = any(filters.values()),
-        networks       = summarize_cve_alerts()["networks"],
+        filtered       = filtered,
+        networks       = networks,
         severities     = CVE_SEVERITIES,
         severity_class = _SEVERITY_CLASS,
     )

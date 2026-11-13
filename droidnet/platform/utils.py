@@ -15,6 +15,7 @@ import re
 import platform
 import shutil
 import subprocess
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -109,6 +110,34 @@ def get_available_tools() -> dict[str, bool]:
 #  Network interface detection
 # ══════════════════════════════════════════════════════════════════
 
+# Default-route lookups (get_default_iface / get_default_gateway) run back to
+# back during a scan cycle. Cache the `ip route show default` output briefly,
+# keyed on the active subprocess.run callable so monkeypatched runners in unit
+# tests never observe cached output from an earlier call.
+_ROUTE_CACHE: tuple[object, float, str] = (None, 0.0, "")
+_ROUTE_CACHE_TTL = 2.0
+
+
+def _default_route_output() -> str:
+    """Return ``ip route show default`` stdout, reused across back-to-back calls."""
+    global _ROUTE_CACHE
+    runner = subprocess.run
+    cached_runner, ts, cached_out = _ROUTE_CACHE
+    now = time.monotonic()
+    if cached_runner is runner and (now - ts) < _ROUTE_CACHE_TTL:
+        return cached_out
+    try:
+        proc = runner(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
+        )
+        out = proc.stdout or ""
+    except Exception:
+        out = ""
+    _ROUTE_CACHE = (runner, now, out)
+    return out
+
+
 def get_default_iface() -> str:
     """
     Return the name of the active network interface.
@@ -120,16 +149,9 @@ def get_default_iface() -> str:
     if is_termux():
         return "wlan0"
 
-    try:
-        proc = subprocess.run(
-            ["ip", "route", "show", "default"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
-        )
-        match = re.search(r"dev\s+(\S+)", proc.stdout)
-        if match:
-            return match.group(1)
-    except Exception:
-        pass
+    match = re.search(r"dev\s+(\S+)", _default_route_output())
+    if match:
+        return match.group(1)
 
     try:
         for iface in os.listdir("/sys/class/net"):
@@ -151,16 +173,9 @@ def get_default_gateway(local_ip: str | None = None) -> str | None:
         dotted IPv4 address, fall back to the conventional ``.1`` host of that
         /24. Returns None when neither path yields an address.
     """
-    try:
-        proc = subprocess.run(
-            ["ip", "route", "show", "default"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_COMMAND_TIMEOUT,
-        )
-        match = re.search(r"via\s+(\S+)", proc.stdout)
-        if match:
-            return match.group(1)
-    except Exception:
-        pass
+    match = re.search(r"via\s+(\S+)", _default_route_output())
+    if match:
+        return match.group(1)
 
     if local_ip and local_ip.count(".") == 3:
         return ".".join(local_ip.split(".")[:-1]) + ".1"
@@ -370,21 +385,23 @@ def send_notification(title: str, message: str) -> None:
     """
     if is_termux():
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 ["termux-notification", "-t", title, "-c", message],
                 capture_output=True, stdin=subprocess.DEVNULL, timeout=5,
             )
-            return
+            if getattr(proc, "returncode", 0) == 0:
+                return
         except Exception:
             pass
     else:
         if has_command("notify-send"):
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     ["notify-send", "-t", "5000", title, message],
                     capture_output=True, stdin=subprocess.DEVNULL, timeout=5,
                 )
-                return
+                if getattr(proc, "returncode", 0) == 0:
+                    return
             except Exception:
                 pass
 
@@ -413,9 +430,9 @@ def wake_lock():
     held = False
     if is_termux() and has_command("termux-wake-lock"):
         try:
-            subprocess.run(["termux-wake-lock"], capture_output=True,
-                           stdin=subprocess.DEVNULL, timeout=5)
-            held = True
+            proc = subprocess.run(["termux-wake-lock"], capture_output=True,
+                                  stdin=subprocess.DEVNULL, timeout=5)
+            held = getattr(proc, "returncode", 0) == 0
         except Exception:
             pass
     try:

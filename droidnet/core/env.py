@@ -31,7 +31,7 @@ def evaluate_system() -> dict:
             is_termux            – bool
             is_root              – bool
             raw_sockets_enabled  – bool (requires root)
-            monitor_mode_capable – bool (requires root + iw or airmon-ng)
+            monitor_mode_capable – bool (requires root + iw)
             default_iface        – str
             tools                – dict[str, bool]
     """
@@ -42,7 +42,7 @@ def evaluate_system() -> dict:
         "is_termux":            is_termux(),
         "is_root":              is_root,
         "raw_sockets_enabled":  is_root,
-        "monitor_mode_capable": is_root and (has_command("iw") or has_command("airmon-ng")),
+        "monitor_mode_capable": is_root and has_command("iw"),
         "default_iface":        get_default_iface(),
         "tools":                get_available_tools(),
     }

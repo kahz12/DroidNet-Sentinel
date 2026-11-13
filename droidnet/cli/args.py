@@ -102,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_spoof.add_argument("victim",  metavar="VICTIM_IP")
     p_spoof.add_argument("gateway", metavar="GATEWAY_IP")
     p_spoof.add_argument("--iface", default=None,
-                         help=f"Interface (default: {get_default_iface()}).")
+                         help="Interface (default: active route interface).")
 
     p_deauth = sub.add_parser("deauth", help="802.11 deauthentication")
     p_deauth.add_argument("target",  metavar="TARGET_MAC",

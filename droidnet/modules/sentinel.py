@@ -187,11 +187,16 @@ def _run_nmap_sn(args: list[str]) -> tuple[int, str]:
             args, capture_output=True, text=True, timeout=180,
             stdin=subprocess.DEVNULL,
         )
+        if proc.returncode != 0:
+            log.warning("nmap discovery failed exit=%d stderr=%s",
+                        proc.returncode, (proc.stderr or "").strip())
         return proc.returncode, proc.stdout
     except subprocess.TimeoutExpired:
         rprint("[yellow][-] ping_sweep timed out (180 s). Slow or very crowded network.[/yellow]")
+        log.warning("nmap discovery timed out (180s)")
         return 124, ""
-    except Exception:
+    except Exception as exc:
+        log.warning("nmap discovery failed: %s", exc)
         return 1, ""
 
 
@@ -419,7 +424,8 @@ def _scan_one(ip: str) -> tuple[str, list[str]]:
         return ip, ["Error: inconclusive port states"]
     except subprocess.TimeoutExpired:
         return ip, ["Error: timeout"]
-    except Exception:
+    except Exception as exc:
+        log.warning("host scan failed ip=%s: %s", ip, exc)
         return ip, ["Error"]
 
 
@@ -476,6 +482,30 @@ def deep_scan(live_ips: list[str]) -> dict:
 #  Active response
 # ══════════════════════════════════════════════════════════════════
 
+class _CutEvent(threading.Event):
+    """Stop event for an ARP-cut worker thread.
+
+    poison() calls stop_event.wait(interval) once it has verified its backend
+    (arpspoof or Scapy), resolved the victim/gateway MACs and sent the first
+    forged frames. Deferring the 'cut' journal entry until that first wait()
+    ensures an early abort (missing tool, unreachable MAC, bad interface) is
+    never recorded as an active cut or a subsequent restore.
+    """
+
+    def __init__(self, on_active) -> None:
+        super().__init__()
+        self.active = False
+        self.ready = threading.Event()
+        self._on_active = on_active
+
+    def wait(self, timeout=None) -> bool:
+        if not self.active and not self.is_set():
+            self.active = True
+            self._on_active()
+            self.ready.set()
+        return super().wait(timeout)
+
+
 class AutoCutSession:
     """Own response jobs; reconcile targets and restore them before returning.
 
@@ -491,7 +521,7 @@ class AutoCutSession:
     _UNSET = object()
 
     def __init__(self):
-        self.jobs: dict[tuple[str, str, str], tuple[threading.Event, threading.Thread]] = {}
+        self.jobs: dict[tuple[str, str, str], tuple[_CutEvent, threading.Thread]] = {}
         self.network: str | None = None
         self._refused_network = AutoCutSession._UNSET
 
@@ -503,14 +533,19 @@ class AutoCutSession:
                 stop.set()
                 thread.join()
                 del self.jobs[key]
-                # Only a live thread we stop sends corrective ARP on its way
-                # out (poison() restores in its finally). A thread that already
-                # died on its own never restored its victim, so journalling a
+                # Only a live thread that actually started poisoning sends
+                # corrective ARP on its way out (poison() restores in its
+                # finally). A thread that already died on its own or never
+                # started poisoning never restored its victim, so journalling a
                 # "restore" for it would be a false entry in the security trail.
-                if alive:
+                if alive and stop.active:
                     record_guard_event("restore", ip=key[0], network=self.network)
         for key in targets - self.jobs.keys():
-            stop = threading.Event()
+            stop = _CutEvent(
+                lambda ip=key[0], net=self.network: record_guard_event(
+                    "cut", ip=ip, network=net, reason="not in trusted_ips"
+                )
+            )
             thread = threading.Thread(target=self._run, args=(key, stop))
             self.jobs[key] = stop, thread
             try:
@@ -518,8 +553,10 @@ class AutoCutSession:
             except BaseException:
                 del self.jobs[key]
                 raise
-            record_guard_event("cut", ip=key[0], network=self.network,
-                               reason="not in trusted_ips")
+            stop.ready.wait(timeout=0.5)
+            if not thread.is_alive() and not stop.active:
+                thread.join()
+                del self.jobs[key]
 
     @staticmethod
     def _run(key, stop):
@@ -528,23 +565,27 @@ class AutoCutSession:
             poison(*key, stop_event=stop)
         except Exception:
             log.exception("ARP response failed for %s", key[0])
+        finally:
+            stop.ready.set()
 
     def wait(self):
         while any(thread.is_alive() for _, thread in self.jobs.values()):
             time.sleep(0.2)
 
     def close(self):
-        # Only threads still alive will send corrective ARP when stopped; ones
-        # that already died never restored their victim, so they must not be
-        # journalled as restored (same reasoning as update()).
-        restored = [key[0] for key, (_, thread) in self.jobs.items() if thread.is_alive()]
+        # Only threads still alive that actually started poisoning will send
+        # corrective ARP when stopped; ones that already died or aborted early
+        # never restored their victim, so they must not be journalled as
+        # restored (same reasoning as update()).
+        alive_jobs = [(key[0], stop) for key, (stop, thread) in self.jobs.items() if thread.is_alive()]
         for stop, _ in self.jobs.values():
             stop.set()
         for _, thread in self.jobs.values():
             thread.join()
         self.jobs.clear()
-        for ip in restored:
-            record_guard_event("restore", ip=ip, network=self.network)
+        for ip, stop in alive_jobs:
+            if stop.active:
+                record_guard_event("restore", ip=ip, network=self.network)
 
 
 def cut_unknowns(targets: list[str], my_ip: str, config: dict,
@@ -767,7 +808,7 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession,
                 log.info("scan started network=%s my_ip=%s auto_cut=%s",
                          current_ssid, my_ip, auto_cut)
 
-                excluded = config.get("excluded_ips", [])
+                excluded = list(config.get("excluded_ips", []))
                 if my_ip not in excluded:
                     excluded.append(my_ip)
 

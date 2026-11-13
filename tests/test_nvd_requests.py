@@ -131,3 +131,69 @@ def test_a_rerun_served_from_cache_does_not_sleep(net, monkeypatch):
     cve.run_cve_watcher()
     assert len(net.sent_at) == first_run_requests   # everything came from cache
     assert net.sleeps == []
+
+
+def test_http_clients_reuse_persistent_session_by_default(monkeypatch):
+    from droidnet.core import notifier
+    from droidnet.modules import hunter
+
+    monkeypatch.setattr(cve, "_throttle", lambda: None)
+    nvd_get = Mock(return_value=response(200))
+    monkeypatch.setattr(cve._SESSION, "get", nvd_get)
+    assert cve._nvd_get({}, "dnsmasq") == PAGE
+    nvd_get.assert_called_once()
+
+    vulners_resp = Mock(status_code=200)
+    vulners_resp.json.return_value = {"result": "OK", "data": {"search": []}}
+    vulners_post = Mock(return_value=vulners_resp)
+    monkeypatch.setattr(hunter._SESSION, "post", vulners_post)
+    assert hunter._hunt_exploits_vulners("nginx 1.18", "secret") == []
+    vulners_post.assert_called_once()
+
+    monkeypatch.setattr(notifier, "TELEGRAM_TOKEN", "123:abc")
+    monkeypatch.setattr(notifier, "TELEGRAM_CHAT_ID", "999")
+    tg_resp = Mock(ok=True, status_code=200)
+    tg_post = Mock(return_value=tg_resp)
+    monkeypatch.setattr(notifier._SESSION, "post", tg_post)
+    assert notifier.send_telegram("hello") is True
+    tg_post.assert_called_once()
+
+
+def test_parse_nvd_payload_evaluates_best_metric_once_per_cve(monkeypatch):
+    calls = 0
+    real_best_metric = cve._best_metric
+
+    def counted_best_metric(entry):
+        nonlocal calls
+        calls += 1
+        return real_best_metric(entry)
+
+    monkeypatch.setattr(cve, "_best_metric", counted_best_metric)
+    payload = {
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "id": "CVE-2026-0001",
+                    "descriptions": [{"lang": "en", "value": "test"}],
+                    "metrics": {
+                        "cvssMetricV31": [
+                            {
+                                "type": "Primary",
+                                "cvssData": {
+                                    "baseScore": 9.8,
+                                    "baseSeverity": "CRITICAL",
+                                    "attackVector": "NETWORK",
+                                },
+                            }
+                        ]
+                    },
+                }
+            }
+        ]
+    }
+    parsed = cve._parse_nvd_payload(payload)
+    assert parsed[0]["score"] == 9.8
+    assert parsed[0]["severity"] == "CRITICAL"
+    assert parsed[0]["attack_vector"] == "NETWORK"
+    assert calls == 1
+

@@ -93,6 +93,9 @@ def _hunt_exploits_local(query: str) -> list[dict] | None:
 
 
 _VULNERS_URL = "https://vulners.com/api/v3/search/lucene/"
+# Persistent HTTP session so consecutive Vulners lookups share one TLS connection.
+_ORIG_REQUESTS_POST = requests.post
+_SESSION = requests.Session()
 
 
 def _redact(text: str, secret: str) -> str:
@@ -113,8 +116,9 @@ def _hunt_exploits_vulners(query: str, api_key: str) -> list[dict] | None:
         rprint(f"[yellow]Vulners lookup failed for '{esc(query)}': "
                f"{esc(_redact(str(reason), api_key))}[/yellow]")
 
+    http_post = _SESSION.post if requests.post is _ORIG_REQUESTS_POST else requests.post
     try:
-        resp = requests.post(
+        resp = http_post(
             _VULNERS_URL,
             json={"query": f"type:exploitdb AND {query}", "size": 10},
             headers={"X-Api-Key": api_key, "User-Agent": "DroidNet-Sentinel"},

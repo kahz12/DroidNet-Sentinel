@@ -99,3 +99,10 @@ def test_feature_table_does_not_claim_hunter_needs_searchsploit():
     text = rec.export_text()
     assert "Requires `searchsploit`" not in text
     assert "Vulners" in text
+
+
+def test_build_parser_does_not_probe_default_interface(monkeypatch):
+    monkeypatch.setattr(cli_args, "get_default_iface",
+                        lambda: pytest.fail("_build_parser must not call get_default_iface"))
+    parser = cli_args._build_parser()
+    assert parser.prog == "droidnet"

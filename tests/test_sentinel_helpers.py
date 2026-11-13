@@ -142,3 +142,30 @@ def test_get_local_ip_prefers_ip_route(monkeypatch):
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
     assert _get_local_ip() == "192.168.5.20"
     assert calls == ["ip"]     # hostname -I is never reached when ip route wins
+
+
+def test_sentinel_loop_does_not_mutate_config_excluded_ips(monkeypatch):
+    cfg = {"excluded_ips": ["192.168.1.200"], "db_retention_days": 0}
+    seen_excluded = []
+    monkeypatch.setattr(sentinel, "init_db", lambda: None)
+    monkeypatch.setattr(sentinel, "get_wifi_info", lambda: {"ssid": "Net", "ip": "192.168.1.10"})
+    monkeypatch.setattr(sentinel, "load_user_config", lambda: cfg)
+    monkeypatch.setattr(sentinel, "ping_sweep", lambda ip, ex: (seen_excluded.append(list(ex)), None)[1])
+    sentinel._run_sentinel_loop(interactive=True, auto_cut=False, jobs=Mock())
+    assert cfg["excluded_ips"] == ["192.168.1.200"]
+    assert seen_excluded == [["192.168.1.200", "192.168.1.10"]]
+
+
+def test_default_route_query_is_reused_across_gateway_and_iface(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **_):
+        calls.append(cmd)
+        return _FakeProc("default via 192.168.1.1 dev wlan0 proto dhcp")
+
+    monkeypatch.setattr(utils, "is_termux", lambda: False)
+    monkeypatch.setattr(utils.subprocess, "run", fake_run)
+    assert get_default_gateway("192.168.1.10") == "192.168.1.1"
+    assert utils.get_default_iface() == "wlan0"
+    assert len(calls) == 1
+

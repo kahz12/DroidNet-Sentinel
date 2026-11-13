@@ -34,6 +34,7 @@ from rich.table import Table
 
 from droidnet.config import NVD_CACHE_DIR
 from droidnet.core.database import (
+    batch_transaction,
     init_db,
     get_latest_scan_with_services,
     save_cve_alert,
@@ -51,6 +52,12 @@ console = Console()
 
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_API_KEY = os.environ.get("NVD_API_KEY", "")
+
+# Reuse a persistent HTTP session so paginated NVD lookups share the same TLS
+# connection. Falling back to requests.get when monkeypatched keeps offline
+# unit tests working without touching the session directly.
+_ORIG_REQUESTS_GET = requests.get
+_SESSION = requests.Session()
 
 # Minimum spacing between real NVD requests. The public API allows 5
 # requests per 30 s without a key and 50 with one. Enforced only in
@@ -461,8 +468,9 @@ def _nvd_get(params: dict, query_label: str) -> dict | None:
     for attempt in range(1, _BACKOFF_MAX_RETRIES + 1):
         _throttle()
         retry_after = None
+        http_get = _SESSION.get if requests.get is _ORIG_REQUESTS_GET else requests.get
         try:
-            resp = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
+            resp = http_get(NVD_API_URL, params=params, headers=headers, timeout=30)
         except (requests.Timeout, requests.ConnectionError) as exc:
             reason = f"network error: {exc}"
         except requests.RequestException as exc:
@@ -533,14 +541,15 @@ def _parse_nvd_payload(data: dict) -> list[dict]:
             first = descs[0] if descs else None
             desc = first.get("value", "") if isinstance(first, dict) else ""
 
-        score, severity = _extract_cvss(cve)
+        best = _best_metric(cve)
+        score, severity = _extract_cvss(cve, best)
 
         results.append({
             "cve_id":      cve_id,
             "description": desc,
             "score":       score,
             "severity":    severity,
-            "attack_vector": _extract_attack_vector(cve),
+            "attack_vector": _extract_attack_vector(cve, best),
             "published":   cve.get("published", ""),
             "cwes":        _extract_cwes(cve),
             # Present in the NVD record only when CISA lists the CVE as a Known
@@ -697,15 +706,20 @@ def _best_metric(cve: dict) -> tuple[float, str, dict, bool] | None:
     return None
 
 
-def _extract_cvss(cve: dict) -> tuple[float | None, str]:
+_UNSET = object()
+
+
+def _extract_cvss(cve: dict, best=_UNSET) -> tuple[float | None, str]:
     """Extract the best available CVSS score and severity from a CVE entry."""
-    best = _best_metric(cve)
+    if best is _UNSET:
+        best = _best_metric(cve)
     return (best[0], best[1]) if best else (None, "UNKNOWN")
 
 
-def _extract_attack_vector(cve: dict) -> str | None:
+def _extract_attack_vector(cve: dict, best=_UNSET) -> str | None:
     """Attack vector of the scoring metric: NETWORK, ADJACENT[_NETWORK], LOCAL..."""
-    best = _best_metric(cve)
+    if best is _UNSET:
+        best = _best_metric(cve)
     if not best:
         return None
     vector = best[2].get("accessVector" if best[3] else "attackVector")  # v2 name differs
@@ -1067,22 +1081,25 @@ def run_cve_watcher(days_back: int | None = 120, show_history: bool = False) -> 
             }
             all_matches.append(match)
 
-            # Persist (or refresh) each alert; only new or changed ones are
-            # announced, instead of re-sending every match on every run.
-            for ip in kw["ips"]:
-                if save_cve_alert(
-                    cve_id=cve["cve_id"],
-                    severity=cve["severity"],
-                    score=cve["score"],
-                    service=kw["keyword"],
-                    ip=ip,
-                    summary=cve["description"][:500],
-                    impact=impact,
-                    network=network,
-                    scan_id=scan_id,
-                    match_type=match_type,
-                ):
-                    match["notify"] = True
+    # Persist (or refresh) all matched alerts in one transaction; only new or
+    # changed ones are announced, instead of re-sending every match on every run.
+    if all_matches:
+        with batch_transaction():
+            for match in all_matches:
+                for ip in match["ips"]:
+                    if save_cve_alert(
+                        cve_id=match["cve_id"],
+                        severity=match["severity"],
+                        score=match["score"],
+                        service=match["service"],
+                        ip=ip,
+                        summary=match["description"][:500],
+                        impact=match["impact"],
+                        network=network,
+                        scan_id=scan_id,
+                        match_type=match["match_type"],
+                    ):
+                        match["notify"] = True
 
     # Present the most urgent matches first.
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}

@@ -22,7 +22,6 @@ in Termux. On Linux: apt install dsniff. Otherwise, install scapy
 (`pip install scapy`) and the native Python fallback will be used.
 """
 
-import shutil
 import subprocess
 import sys
 import time
@@ -30,7 +29,10 @@ from threading import Event
 
 from rich import print as rprint
 
-from droidnet.platform.utils import check_root, get_default_iface
+from droidnet.core.logger import get_logger
+from droidnet.platform.utils import check_root, get_default_iface, resolve_command
+
+log = get_logger(__name__)
 
 # Scapy is optional — only used if arpspoof is missing.
 try:
@@ -41,8 +43,8 @@ except (ImportError, OSError):
 
 
 def _arpspoof_available() -> bool:
-    """Return True if arpspoof is found in PATH."""
-    return shutil.which("arpspoof") is not None
+    """Return True if arpspoof is found in PATH or standard sbin directories."""
+    return resolve_command("arpspoof") is not None
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -57,6 +59,7 @@ def _resolve_mac(ip: str, iface: str, timeout: float = 3.0) -> str | None:
             iface=iface, timeout=timeout, verbose=False,
         )
     except Exception as exc:
+        log.warning("ARP resolve failed ip=%s iface=%s: %s", ip, iface, exc)
         rprint(f"[red]ARP resolve failed for {ip}: {exc}[/red]")
         return None
     for _, rcv in ans:
@@ -83,12 +86,15 @@ def _poison_scapy(
     target_mac  = _resolve_mac(target_ip,  iface)
     gateway_mac = _resolve_mac(gateway_ip, iface)
     if not target_mac or not gateway_mac:
+        log.warning("ARP poison aborted: could not resolve MACs target=%s gateway=%s iface=%s",
+                    target_ip, gateway_ip, iface)
         rprint("[bold red][✗] Could not resolve MACs (hosts down or incorrect iface?).[/bold red]")
         return
 
     try:
         our_mac = get_if_hwaddr(iface)
     except Exception as exc:
+        log.warning("ARP poison aborted: could not read MAC iface=%s: %s", iface, exc)
         rprint(f"[bold red][✗] Could not read MAC from {iface}: {exc}[/bold red]")
         return
 
@@ -130,6 +136,7 @@ def _poison_scapy(
                 try:
                     sendp(frame, iface=iface, verbose=False)
                 except Exception as exc:
+                    log.warning("ARP restoration failed iface=%s: %s", iface, exc)
                     rprint(f"[yellow]ARP restoration failed: {exc}[/yellow]")
             time.sleep(0.2)
         rprint("[dim]ARP response stopped; restoration attempted.[/dim]")
@@ -163,6 +170,7 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0",
             rprint(f"  Iface   : [cyan]{iface}[/cyan]")
             _poison_scapy(target_ip, gateway_ip, iface, stop_event=stop_event)
             return
+        log.warning("ARP poison aborted: neither arpspoof nor scapy available")
         rprint("[bold red][✗] arpspoof not found and Scapy unavailable. Check installation and socket permissions.[/bold red]")
         rprint("[dim]On Linux: sudo apt install dsniff  (or pip install scapy)[/dim]")
         rprint("[dim]On Termux: pip install scapy (Android usually blocks raw sockets)[/dim]")
@@ -174,13 +182,14 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0",
     rprint(f"  Iface   : [cyan]{iface}[/cyan]")
     rprint("  [dim]Ctrl+C to stop and restore.[/dim]\n")
 
+    arpspoof = resolve_command("arpspoof") or "arpspoof"
     processes = []
     try:
         for target, source in ((target_ip, gateway_ip), (gateway_ip, target_ip)):
             if stop_event.is_set():
                 return
             processes.append(subprocess.Popen(
-                ["arpspoof", "-i", iface, "-t", target, source],
+                [arpspoof, "-i", iface, "-t", target, source],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             ))
         # Blocks until either arpspoof dies (or Ctrl+C).
@@ -188,6 +197,8 @@ def poison(target_ip: str, gateway_ip: str, iface: str = "wlan0",
         while all(p.poll() is None for p in processes) and not stop_event.wait(0.5):
             pass
         if any(p.poll() is not None for p in processes):
+            log.warning("arpspoof terminated unexpectedly target=%s gateway=%s iface=%s",
+                        target_ip, gateway_ip, iface)
             rprint("[bold yellow][!][/bold yellow] An arpspoof process terminated. Cleaning up...")
     except KeyboardInterrupt:
         rprint("\n[bold yellow][!][/bold yellow] Stopping and restoring network...")

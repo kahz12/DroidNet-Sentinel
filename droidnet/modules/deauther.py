@@ -20,7 +20,6 @@ Requires:
 """
 
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -28,7 +27,7 @@ import time
 
 from rich import print as rprint
 
-from droidnet.platform.utils import check_root
+from droidnet.platform.utils import check_root, resolve_command
 
 # Non-overlapping 2.4 GHz channels (the most used). For a full hop
 # add 2-13, but it slows down effective injection significantly.
@@ -73,9 +72,13 @@ def _enable_monitor(iface: str) -> bool:
     Returns True if successful, False if the chip does not support it.
     """
     rprint(f"[yellow][!][/yellow] Attempting to activate monitor mode on {iface}...")
-    subprocess.run(["ip", "link", "set", iface, "down"], capture_output=True, timeout=10, check=True)
-    subprocess.run(["iw", "dev", iface, "set", "type", "monitor"], capture_output=True, timeout=10, check=True)
-    subprocess.run(["ip", "link", "set", iface, "up"], capture_output=True, timeout=10, check=True)
+    iw = resolve_command("iw") or "iw"
+    try:
+        subprocess.run(["ip", "link", "set", iface, "down"], capture_output=True, timeout=10, check=True)
+        subprocess.run([iw, "dev", iface, "set", "type", "monitor"], capture_output=True, timeout=10, check=True)
+        subprocess.run(["ip", "link", "set", iface, "up"], capture_output=True, timeout=10, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
     time.sleep(1)
     return _check_monitor_mode(iface)
 
@@ -83,8 +86,9 @@ def _enable_monitor(iface: str) -> bool:
 def _disable_monitor(iface: str) -> None:
     """Restore *iface* to managed mode. Best-effort, swallows errors."""
     rprint(f"[dim][·] Restoring {iface} to managed mode...[/dim]")
+    iw = resolve_command("iw") or "iw"
     for cmd in (["ip", "link", "set", iface, "down"],
-                ["iw", "dev", iface, "set", "type", "managed"],
+                [iw, "dev", iface, "set", "type", "managed"],
                 ["ip", "link", "set", iface, "up"]):
         try:
             subprocess.run(cmd, capture_output=True, timeout=10, check=True)
@@ -102,11 +106,12 @@ def _injection_supported(iface: str) -> bool | None:
         2. If not found → returns None (we cannot check it, do not
            block the user).
     """
-    if not shutil.which("aireplay-ng"):
+    aireplay = resolve_command("aireplay-ng")
+    if not aireplay:
         return None
     try:
         proc = subprocess.run(
-            ["aireplay-ng", "--test", iface],
+            [aireplay, "--test", iface],
             capture_output=True, text=True, timeout=12,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -117,9 +122,10 @@ def _injection_supported(iface: str) -> bool | None:
 
 def _set_channel(iface: str, channel: int) -> bool:
     """`iw dev <iface> set channel <ch>`. True if retcode == 0."""
+    iw = resolve_command("iw") or "iw"
     try:
         proc = subprocess.run(
-            ["iw", "dev", iface, "set", "channel", str(channel)],
+            [iw, "dev", iface, "set", "channel", str(channel)],
             capture_output=True, timeout=2,
         )
     except (OSError, subprocess.SubprocessError):

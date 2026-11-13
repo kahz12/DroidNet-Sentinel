@@ -127,6 +127,34 @@ def test_wake_lock_is_a_noop_off_termux(monkeypatch):
         assert held is False
 
 
+def test_wake_lock_nonzero_exit_reports_not_held_and_skips_unlock(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+    monkeypatch.setattr(utils, "is_termux", lambda: True)
+    monkeypatch.setattr(utils, "has_command", lambda cmd: True)
+    monkeypatch.setattr(
+        utils.subprocess,
+        "run",
+        lambda argv, **k: (calls.append(argv[0]), SimpleNamespace(returncode=1))[1],
+    )
+    with utils.wake_lock() as held:
+        assert held is False
+    assert calls == ["termux-wake-lock"]
+
+
+def test_send_notification_falls_back_to_console_when_notify_send_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    printed = []
+    monkeypatch.setattr(utils, "is_termux", lambda: False)
+    monkeypatch.setattr(utils, "has_command", lambda cmd: cmd == "notify-send")
+    monkeypatch.setattr(utils.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(utils, "rprint", printed.append)
+    utils.send_notification("Alert", "Body")
+    assert len(printed) == 1 and "Alert" in printed[0] and "Body" in printed[0]
+
+
 # ── auto-cut safety and journaling ─────────────────────────────────
 
 def test_empty_allowlist_refuses_to_cut_and_records_it(monkeypatch):
@@ -159,6 +187,19 @@ def test_cut_and_restore_are_journalled(monkeypatch):
     actions = [(e["action"], e["ip"]) for e in get_guard_events()]
     assert ("cut", "192.0.2.50") in actions
     assert ("restore", "192.0.2.50") in actions
+
+
+def test_aborted_poison_does_not_journal_false_cut(monkeypatch):
+    # When poison() exits before entering its active loop (e.g. missing
+    # arpspoof/scapy or failed MAC resolution), no 'cut' or 'restore' is
+    # recorded in the guard journal.
+    monkeypatch.setattr("droidnet.modules.spoofer.poison", lambda *a, stop_event: None)
+    jobs = sentinel.AutoCutSession()
+    jobs.network = "Home"
+    jobs.update({("192.0.2.50", "192.0.2.1", "wlan0")})
+    jobs.close()
+    assert get_guard_events() == []
+    assert jobs.jobs == {}
 
 
 def test_run_sentinel_traps_signals_and_brackets_the_guard(monkeypatch):

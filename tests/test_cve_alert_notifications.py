@@ -154,3 +154,42 @@ def test_unconfigured_telegram_counts_as_announced(watcher):
     cve.run_cve_watcher()
     cve.run_cve_watcher()
     assert len(watcher["sent"]) == 1
+
+
+def test_run_cve_watcher_batches_alert_writes_in_single_connection(monkeypatch):
+    from contextlib import contextmanager
+
+    db.save_scan(
+        "lab",
+        "20261109_120000",
+        {
+            "192.0.2.5": ["80/tcp open http nginx 1.18.0"],
+            "192.0.2.6": ["80/tcp open http nginx 1.18.0"],
+            "192.0.2.7": ["80/tcp open http nginx 1.18.0"],
+        },
+    )
+    monkeypatch.setattr(cve.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        cve,
+        "query_nvd",
+        lambda *_, **__: [nvd("CVE-2026-0001"), nvd("CVE-2026-0002"), nvd("CVE-2026-0003")],
+    )
+    monkeypatch.setattr(cve, "send_alert", lambda *_, **__: False)
+
+    real_conn = db._conn
+    conn_opens = 0
+
+    @contextmanager
+    def counted_conn():
+        nonlocal conn_opens
+        conn_opens += 1
+        with real_conn() as c:
+            yield c
+
+    monkeypatch.setattr(db, "_conn", counted_conn)
+    cve.run_cve_watcher(show_history=False)
+    # 3 CVEs × 3 hosts = 9 alert upserts, but only 3 _conn() opens total:
+    # init_db(), get_latest_scan_with_services(), and 1 batch_transaction().
+    assert len(db.get_cve_alerts(network="lab")) == 9
+    assert conn_opens == 4  # 3 during run_cve_watcher + 1 for get_cve_alerts assertion
+

@@ -89,3 +89,14 @@ def test_a_tool_covered_by_another_is_not_reported_missing(monkeypatch, tools, t
 def test_tool_list_still_reports_searchsploit_itself_as_missing(monkeypatch):
     text = _probe(monkeypatch, searchsploit=False)
     assert "x searchsploit" in [line.strip() for line in text.splitlines()]
+
+
+def test_evaluate_system_monitor_mode_requires_iw(monkeypatch):
+    monkeypatch.setattr(env, "check_root", lambda: True)
+    monkeypatch.setattr(env, "get_default_iface", lambda: "wlan0")
+    monkeypatch.setattr(env, "get_available_tools", lambda: {"iw": False})
+    monkeypatch.setattr(env, "has_command", lambda cmd: cmd == "airmon-ng")
+    assert env.evaluate_system()["monitor_mode_capable"] is False
+
+    monkeypatch.setattr(env, "has_command", lambda cmd: cmd == "iw")
+    assert env.evaluate_system()["monitor_mode_capable"] is True

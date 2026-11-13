@@ -23,6 +23,10 @@ from droidnet.platform.utils import send_notification as _send_local
 
 log = get_logger(__name__)
 
+# Persistent HTTP session so Telegram deliveries reuse an open TLS connection.
+_ORIG_REQUESTS_POST = requests.post
+_SESSION = requests.Session()
+
 # requests puts the full request URL — "/bot<token>/sendMessage" — in its
 # exception messages. Any such path is redacted, whatever token it holds.
 _BOT_PATH = re.compile(r"/bot[^/\s'\"]+")
@@ -82,8 +86,9 @@ def send_telegram(message: str) -> bool | None:
         "text":       message,
         "parse_mode": "HTML",
     }
+    http_post = _SESSION.post if requests.post is _ORIG_REQUESTS_POST else requests.post
     try:
-        resp = requests.post(url, json=payload, timeout=5)
+        resp = http_post(url, json=payload, timeout=5)
     except Exception as exc:
         # Never print str(exc) raw: it carries the token (see _BOT_PATH)
         # and can contain "[...]" that Rich would parse as markup.

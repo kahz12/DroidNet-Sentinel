@@ -126,3 +126,19 @@ def test_api_without_params_returns_full_history(history):
     # Supplying either parameter opts into pagination.
     assert len(client.get("/api/reports?page=1").json) == dash._DEFAULT_PAGE_SIZE
     assert len(client.get("/api/reports?per_page=5").json) == 5
+
+
+def test_diff_queries_use_stored_host_risks_without_recomputing(history, monkeypatch):
+    monkeypatch.setattr(
+        db,
+        "classify_risk",
+        lambda _ports: pytest.fail("classify_risk should not be recomputed on read"),
+    )
+    scans = db.get_all_scans_with_diffs(limit=2)
+    assert scans[0]["risks"]["192.0.2.1"] == "MEDIUM"
+    assert scans[0]["risks"]["192.0.2.100"] == "MINIMAL"
+
+    diff = db.get_scan_diff(scans[0]["id"])
+    assert diff["risks"]["192.0.2.1"] == "MEDIUM"
+    assert diff["risks"]["192.0.2.100"] == "MINIMAL"
+

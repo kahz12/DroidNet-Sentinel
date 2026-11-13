@@ -118,3 +118,51 @@ def test_failed_discovery_retries_and_empty_scan_records_disappearance(monkeypat
     assert scans[0]["targets"] == {}
     assert scans[0]["gone_ips"] == ["192.0.2.20"]
     alert.assert_called_once()
+
+
+def test_spoofer_logs_warning_when_backends_missing_or_arpspoof_exits_early(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(spoofer.log, "warning", lambda msg, *args: warnings.append(msg % args if args else msg))
+    monkeypatch.setattr(spoofer, "_arpspoof_available", lambda: False)
+    monkeypatch.setattr(spoofer, "_SCAPY_OK", False)
+    spoofer.poison("192.0.2.10", "192.0.2.1", "wlan0")
+    assert any("neither arpspoof nor scapy available" in w for w in warnings)
+
+    warnings.clear()
+    proc = Mock()
+    proc.poll.return_value = 1
+    monkeypatch.setattr(spoofer, "_arpspoof_available", lambda: True)
+    monkeypatch.setattr(spoofer.subprocess, "Popen", lambda *a, **k: proc)
+    spoofer.poison("192.0.2.10", "192.0.2.1", "wlan0")
+    assert any("arpspoof terminated unexpectedly" in w for w in warnings)
+
+
+def test_nmap_discovery_and_host_scan_log_warnings_on_failure(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(sentinel.log, "warning", lambda msg, *args: warnings.append(msg % args if args else msg))
+    monkeypatch.setattr(
+        sentinel.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=2, stdout="", stderr="failed to open raw socket"),
+    )
+    rc, _ = sentinel._run_nmap_sn(["nmap", "-sn", "192.0.2.0/24"])
+    assert rc == 2
+    assert any("failed to open raw socket" in w for w in warnings)
+
+    warnings.clear()
+    monkeypatch.setattr(sentinel, "_nmap_host", Mock(side_effect=RuntimeError("unexpected crash")))
+    assert sentinel._scan_one("192.0.2.10") == ("192.0.2.10", ["Error"])
+    assert any("unexpected crash" in w for w in warnings)
+
+
+def test_print_banner_logs_debug_when_env_probe_raises(monkeypatch):
+    from droidnet.cli import menu
+    from droidnet.core import env
+
+    debugs = []
+    monkeypatch.setattr(menu.console, "print", lambda *a, **k: None)
+    monkeypatch.setattr(env, "evaluate_system", Mock(side_effect=RuntimeError("probe boom")))
+    monkeypatch.setattr(menu.log, "debug", lambda msg, *args: debugs.append(msg % args if args else msg))
+    menu.print_banner()
+    assert any("probe boom" in d for d in debugs)
+

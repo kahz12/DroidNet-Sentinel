@@ -556,7 +556,7 @@ def test_identify_merges_sources_by_priority(monkeypatch):
 
 
 def test_identify_survives_a_failing_probe(monkeypatch):
-    _patch_probes(monkeypatch, router=OSError("boom"), mdns=RuntimeError("bug"),
+    _patch_probes(monkeypatch, router=OSError("boom"), mdns=RuntimeError("mdns failed"),
                   ssdp={"192.0.2.5": {"model": "Router", "name": None}})
     metadata = {"192.0.2.5": {"hostname": None}}
     sentinel.identify_devices(metadata, "192.0.2.10")

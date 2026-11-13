@@ -70,8 +70,8 @@ def print_banner() -> None:
         from droidnet.core.env import evaluate_system, display_capabilities
         display_capabilities(evaluate_system())
         console.print()
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("environment probe failed: %s", exc)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -186,3 +186,25 @@ def test_api_alerts_returns_filtered_json(client, alerts):
 
 def test_api_alerts_requires_login():
     assert dash.app.test_client().get("/api/alerts").status_code == 302
+
+
+def test_alerts_page_avoids_full_summary_query(client, alerts, monkeypatch):
+    monkeypatch.setattr(
+        dash,
+        "summarize_cve_alerts",
+        lambda: pytest.fail("/alerts should not call summarize_cve_alerts"),
+    )
+    # Unfiltered /alerts derives networks directly from already-loaded alerts.
+    monkeypatch.setattr(
+        dash,
+        "list_cve_alert_networks",
+        lambda: pytest.fail("unfiltered /alerts should not query distinct networks again"),
+    )
+    html = page(client, "/alerts")
+    assert HOME in html and OFFICE in html
+
+    # Filtered /alerts uses the lightweight distinct-networks query.
+    monkeypatch.setattr(dash, "list_cve_alert_networks", db.list_cve_alert_networks)
+    filtered_html = page(client, "/alerts", network=OFFICE)
+    assert HOME in filtered_html and OFFICE in filtered_html
+

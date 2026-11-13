@@ -53,3 +53,9 @@ def test_failed_restoration_step_still_brings_link_up(monkeypatch):
     deauth._disable_monitor("fake0")
     assert run.call_count == 3
     assert run.call_args.args[0] == ["ip", "link", "set", "fake0", "up"]
+
+
+def test_enable_monitor_returns_false_on_called_process_error(monkeypatch):
+    err = deauth.subprocess.CalledProcessError(237, ["iw", "dev", "fake0", "set", "type", "monitor"])
+    monkeypatch.setattr(deauth.subprocess, "run", Mock(side_effect=[Mock(), err]))
+    assert deauth._enable_monitor("fake0") is False
