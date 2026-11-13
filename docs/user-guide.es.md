@@ -88,7 +88,7 @@ en capas:
 main.py
   cli/        análisis de argumentos y el menú interactivo (Rich)
   core/       base de datos, sondeo del entorno, notificador, motor de riesgo, escape de texto,
-              identificación de dispositivos (DNS del router, mDNS, UPnP, Google Cast)
+              identificación de dispositivos (DNS del router, mDNS, UPnP, Google Cast, DHCP)
   modules/    sentinel, hunter, cve_watcher, spoofer, deauther
   platform/   utilidades multiplataforma (Android / Linux)
   web/        el panel Flask y su guía en /help
@@ -485,6 +485,25 @@ Sentinel es el núcleo. Un ciclo de escaneo hace lo siguiente:
    ninguna de estas consultas, y un router sin DNS ni UPnP no añade nada; el
    escaneo sigue igual. La descripción de un dispositivo solo se descarga
    por HTTP plano del propio dispositivo, nunca de otra dirección.
+
+   **Huellas DHCP pasivas (root).** Con root, Sentinel además escucha en el
+   puerto UDP 67 durante toda la sesión y registra las peticiones que los
+   dispositivos difunden al unirse a la red: el hostname que anuncian
+   (opción 12), su clase de vendedor (opción 60) y su lista de parámetros
+   solicitados (opción 55). Una MAC aleatoria oculta el fabricante, pero no
+   el cliente DHCP, así que la columna Device gana una segunda línea con el
+   sistema operativo: `Android 14`, `Windows`, `Apple (iOS/macOS)`,
+   `Linux (Raspberry Pi)`. Solo las señales claras se convierten en
+   etiqueta; cualquier otra lista se escribe en el log como huella para
+   buscarla en fingerbank.org. El listener nunca envía nada. Las
+   renovaciones del préstamo van directas al router y no se ven, así que un
+   dispositivo solo aparece cuando se une o se vuelve a unir (una
+   reconexión Wi-Fi, al despertar): es más útil en modo daemon, que corre
+   durante horas. Un cortafuegos en el equipo, como ufw, descarta estos
+   broadcasts salvo que una regla los deje entrar (ver
+   [Resolución de problemas](#16-resolución-de-problemas)); Sentinel avisa
+   cuando ufw está activo sin ella. Algunos puntos de acceso no reenvían
+   los broadcasts de un cliente a los demás, y entonces tampoco se oye nada.
 4. **Escaneo por dispositivo, en dos pasadas.** Primero se escanean rápido
    los 100 puertos TCP más comunes. Luego, solo en los puertos abiertos, una
    detección de versiones más lenta identifica el software. Separar el
@@ -626,6 +645,78 @@ de gestión (802.11w) activada; esto es por diseño del protocolo, no una
 limitación de la herramienta. La mayoría de los chips integrados de Android
 no pueden inyectar, así que en un teléfono suele hacer falta un adaptador USB
 externo.
+
+### 10.7 Modo guardián (auto-cut continuo)
+
+`daemon --auto-cut` convierte a Sentinel en un control de acceso rudimentario:
+en cada ciclo vuelve a escanear la red y corta por ARP todo dispositivo que no
+esté en tu lista blanca `trusted_ips`, de modo que un equipo que no debería
+estar ahí queda fuera de la LAN. Es destructivo y está apagado por defecto;
+úsalo solo en una red que tengas autorización para defender.
+
+Dos cosas lo hacen seguro para dejarlo corriendo sin vigilancia:
+
+- **La lista blanca es obligatoria.** Con `trusted_ips` vacía, "no se confía en
+  nadie" cortaría todos los dispositivos de la red, así que el auto-cut se niega
+  y sigue solo monitorizando, dejando constancia del rechazo. Empieza a vigilar
+  en cuanto añades al menos una entrada de confianza: el daemon relee
+  `config.json` en cada ciclo, sin reiniciar.
+- **Los objetivos nunca se reproducen desde disco.** El conjunto a cortar se
+  vuelve a derivar de un escaneo fresco en cada ciclo. Si un intruso cambia de
+  IP (una renovación DHCP), se le sigue detectando por "no está en la lista"; si
+  un dispositivo de confianza toma la IP antigua del intruso, no se le corta por
+  error. Por eso el guardián no guarda una lista de objetivos para "retomarla":
+  re-derivar es más seguro y más eficaz.
+
+**Diario de auditoría.** Cada corte, restauración y rechazo se escribe en un
+diario dentro de la base de datos, separado del historial de escaneos para que
+purgar escaneos viejos nunca lo borre. Léelo con `python main.py guard-log` (lo
+más reciente primero; `--limit N` para más filas). Responde a "a quién se cortó,
+cuándo y en qué red".
+
+**Cierre y energía.** El guardián repara las tablas ARP de cada host que cortó
+cuando se detiene: con `Ctrl+C`, y también con `SIGTERM` (`systemctl stop`) y
+`SIGHUP` (cerrar la terminal). Un `SIGKILL` no se puede atrapar, así que una
+muerte dura del killer de poca memoria o del Phantom Process de Android se salta
+la reparación; la red se recupera sola al caducar las cachés ARP, y el diario
+conserva el registro. En Termux, un wake lock (de `termux-api`) evita que Doze
+congele el daemon entre escaneos.
+
+**Autoarranque al encender.** Para reanudar la vigilancia tras un reinicio,
+arranca el daemon desde el sistema operativo, no desde un estado de ataque
+guardado:
+
+- **Linux (systemd).** Crea `/etc/systemd/system/droidnet-guard.service`:
+
+  ```ini
+  [Unit]
+  Description=DroidNet Sentinel guardian
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  ExecStart=/ruta/al/venv/bin/python /ruta/a/DroidNet-Sentinel/main.py daemon --auto-cut
+  WorkingDirectory=/ruta/a/DroidNet-Sentinel
+  Restart=on-failure
+  # SIGTERM detiene el servicio, lo que dispara la restauración ARP.
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+  Luego `sudo systemctl enable --now droidnet-guard`.
+
+- **Android (Termux).** Instala el complemento Termux:Boot y crea
+  `~/.termux/boot/droidnet-guard.sh` (hazlo ejecutable):
+
+  ```bash
+  #!/data/data/com.termux/files/usr/bin/sh
+  termux-wake-lock
+  cd ~/DroidNet-Sentinel && ./venv/bin/python main.py daemon --auto-cut
+  ```
+
+Ninguna de las dos recetas se instala sola: un operador avanzado la monta a
+propósito, y un usuario casual no la dispara por accidente.
 
 ---
 
@@ -797,7 +888,12 @@ hosts       id, scan_id, ip, risk
 ports       id, host_id, port_entry
 cve_alerts  id, cve_id, severity, score, service, ip, summary,
             impact, network, scan_id, created_at, match_type, notified_key
+guard_events id, ts, action, ip, mac, network, reason
 ```
+
+`guard_events` es el diario de auditoría del auto-cut (ver
+[Modo guardián](#107-modo-guardián-auto-cut-continuo)); la purga por retención
+de escaneos no lo toca.
 
 Los informes JSON se escriben en paralelo a la base de datos, así que puedes
 mover o archivar escaneos individuales sin la base de datos.
@@ -815,6 +911,7 @@ necesitan.
 | Columna Hostname                     | De nmap, del DNS del router, de mDNS, UPnP o Cast | Igual                |
 | Columna Device: modelo               | De mDNS, UPnP o Cast, en los dispositivos que responden | Igual          |
 | Columna Device: fabricante de la MAC | Vacía (la MAC necesita ARP, que necesita root)  | Rellena; las direcciones privadas se muestran como `Randomized MAC` |
+| Columna Device: sistema por DHCP     | No disponible (el puerto 67 necesita root)      | De los dispositivos que se unen mientras Sentinel corre; mejor en modo daemon |
 | CVE Watcher, Hunter, panel           | Funciona                                        | Funciona               |
 | Spoofer (corte ARP)                  | No disponible                                   | Obligatorio            |
 | Deauther (deauth 802.11)             | No disponible                                   | Obligatorio            |
@@ -877,6 +974,15 @@ cuando `aireplay-ng` está disponible).
 Sin clave de API, el límite de ritmo público de la NVD es bajo. Define
 `NVD_API_KEY` para subirlo. Las ejecuciones repetidas el mismo día se
 sirven desde la caché local.
+
+**Las huellas DHCP no aparecen nunca, aun ejecutando como root.**
+La causa habitual es un cortafuegos en el propio equipo: tcpdump ve las
+peticiones porque captura antes del cortafuegos, pero el listener solo
+recibe lo que este deja pasar. Con ufw, permite la entrada de las
+peticiones: `sudo ufw allow proto udp from any port 68 to any port 67`.
+Sentinel muestra un aviso al arrancar cuando ufw está activo sin esa regla.
+Recuerda que un dispositivo solo envía estas peticiones al unirse a la red:
+reconecta su Wi-Fi para verlo enseguida.
 
 ---
 

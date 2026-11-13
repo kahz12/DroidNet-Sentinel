@@ -76,7 +76,11 @@ def test_cut_unknowns_aborts_when_gateway_unknown(monkeypatch):
     jobs = Mock()
     monkeypatch.setattr(sentinel, "get_default_gateway", lambda my_ip: None)
 
-    sentinel.cut_unknowns(["192.168.1.99"], my_ip="192.168.1.10", config={}, jobs=jobs)
+    # A non-empty allowlist gets past the empty-trusted_ips refusal so the
+    # gateway-unknown abort is actually exercised (the trusted host is not a
+    # target here, so only the gateway lookup can stop the cut).
+    sentinel.cut_unknowns(["192.168.1.99"], my_ip="192.168.1.10",
+                          config={"trusted_ips": ["192.168.1.50"]}, jobs=jobs)
     jobs.update.assert_called_once_with(set())
 
 

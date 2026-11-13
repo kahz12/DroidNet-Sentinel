@@ -467,6 +467,40 @@ def list_reports() -> None:
     console.print("\n", table, "\n")
 
 
+def show_guard_log(limit: int = 50) -> None:
+    """Print the ARP-cut guardian's audit journal, newest first."""
+    from droidnet.core.database import get_guard_events, init_db
+
+    init_db()
+    events = get_guard_events(limit)
+    if not events:
+        rprint("[dim][-] The guard journal is empty: no auto-cut activity recorded.[/dim]")
+        return
+
+    styles = {"cut": "red", "restore": "green", "refused": "yellow",
+              "guard_start": "cyan", "guard_stop": "cyan"}
+    table = Table(
+        title        = "[bold cyan]Guard journal (ARP cuts)[/bold cyan]",
+        show_header  = True,
+        header_style = "bold magenta",
+    )
+    table.add_column("When (UTC)", style="dim", width=19)
+    table.add_column("Action",     width=12)
+    table.add_column("Host",       style="white", width=16)
+    table.add_column("Network",    style="cyan",  width=20, overflow="fold")
+    table.add_column("Reason",     style="dim")
+
+    # Every field but the timestamp traces back to a device on the scanned
+    # network (its IP, its SSID), so render each one literally.
+    for event in events:
+        action = event["action"]
+        label  = f"[{styles.get(action, 'white')}]{esc(action)}[/]"
+        table.add_row(esc(event["ts"]), label, esc(event["ip"] or "—"),
+                      esc(event["network"] or "—"), esc(event["reason"] or ""))
+
+    console.print("\n", table, "\n")
+
+
 # ══════════════════════════════════════════════════════════════════
 #  Main interactive loop
 # ══════════════════════════════════════════════════════════════════

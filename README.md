@@ -33,7 +33,8 @@ a network you are not authorized to disrupt.
   per-host scan: top 100 TCP ports, then version detection on the open ones.
 - **Device identification.** Names and models from the router's DNS, mDNS,
   UPnP and Google Cast, without root; randomized (private) MACs are flagged
-  as such.
+  as such. With root, passive DHCP fingerprints (options 12, 55 and 60) add
+  the operating system, even behind a randomized MAC.
 - **Risk engine.** Per-host classification (CRITICAL / MEDIUM / LOW / MINIMAL
   / UNKNOWN) from a single shared rule.
 - **Diff history.** New hosts, disappeared hosts and port changes between
@@ -43,6 +44,9 @@ a network you are not authorized to disrupt.
 - **CVE Watcher.** NVD cross-reference by CPE and by description, in a 120-day
   watch mode or a full audit of any date.
 - **Active response.** Manual or automatic ARP cut; 802.11 deauthentication.
+- **Guardian mode.** `daemon --auto-cut` continuously cuts anything not in
+  your allowlist, with an audit journal, graceful ARP restore on SIGTERM/SIGHUP
+  and a documented boot autostart; it refuses to run with an empty allowlist.
 - **Web dashboard.** Authenticated Flask UI with scan history, diffs, a CVE
   alerts view filterable by network, host and severity, and an in-app guide.
 - **Alerting.** Desktop/Termux notifications and Telegram.

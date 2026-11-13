@@ -48,6 +48,10 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+# SQLite sidecars (WAL mode): hold recent scan data while a scan runs
+*.db-wal
+*.db-shm
+*.db-journal
 
 # ── OS ────────────────────────────────────────────────────────────
 .DS_Store

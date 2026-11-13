@@ -2,9 +2,11 @@
 Core Scanner Module — network discovery, port scanning and ARP response.
 
 Flow per cycle:
-    get_wifi_info → ping_sweep → identify_devices → deep_scan → evaluate_risk
-                 → save_report → display_table → cut_unknowns
-                 → send_alert
+    get_wifi_info → ping_sweep → identify_devices → deep_scan
+                 → add_dhcp_fingerprints → evaluate_risk → save_report
+                 → display_table → cut_unknowns → send_alert
+
+A passive DHCP listener (core.dhcp) runs alongside for the whole session.
 """
 
 import json
@@ -28,14 +30,21 @@ from droidnet.config       import (
     REPORTS_DIR,
     load_user_config,
 )
-from droidnet.core.database  import init_db, save_scan, purge_old_scans
+from droidnet.core.database  import init_db, save_scan, purge_old_scans, record_guard_event
 from droidnet.core.devices   import is_locally_administered, mdns_probe, reverse_lookup
+from droidnet.core.dhcp      import DhcpListener, os_hint
+from droidnet.core.guard     import terminating_signals
 from droidnet.core.logger    import get_logger
 from droidnet.core.markup    import esc
 from droidnet.core.risk      import classify_risk, is_scan_error
 from droidnet.core.notifier  import send_alert, escape_html
 from droidnet.core.upnp      import cast_probe, ssdp_probe
-from droidnet.platform.utils import get_default_iface, get_default_gateway, get_wifi_info
+from droidnet.platform.utils import (
+    get_default_iface,
+    get_default_gateway,
+    get_wifi_info,
+    wake_lock,
+)
 
 log = get_logger(__name__)
 
@@ -69,17 +78,26 @@ def evaluate_risk(ports: list[str]) -> str:
 
 def _device_cell(meta: dict) -> str:
     """Device column: the model the device reported, else nmap's OUI vendor,
-    else a note for a randomized MAC.
+    else a note for a randomized MAC; then, on a second line, the operating
+    system its DHCP requests revealed, when known.
 
     The vendor beats the note when nmap knows the prefix: a few locally
     administered prefixes are real (QEMU's 52:54:00). A randomized MAC is
     the default on modern phones, so the note is informational and never
-    affects risk.
+    affects risk. The DHCP line is what still describes such a phone:
+    "Randomized MAC" over "Android 14".
     """
     label = meta.get("model") or meta.get("vendor")
-    if not label and is_locally_administered(meta.get("mac")):
-        return "[italic]Randomized MAC[/italic]"
-    return esc(label or "—")
+    if label:
+        cell = esc(label)
+    elif is_locally_administered(meta.get("mac")):
+        cell = "[italic]Randomized MAC[/italic]"
+    else:
+        cell = ""
+    system = meta.get("os")
+    if system and (not label or system.lower() not in label.lower()):
+        cell = f"{cell}\n{esc(system)}" if cell else esc(system)
+    return cell or "—"
 
 
 def display_results_table(
@@ -269,6 +287,32 @@ def identify_devices(metadata: dict[str, dict], my_ip: str) -> None:
              len(ips), len(router_names), len(mdns_hints), len(upnp_hints), len(cast_hints))
 
 
+def add_dhcp_fingerprints(metadata: dict[str, dict], listener: DhcpListener | None) -> None:
+    """Add what passive DHCP listening learnt about each host, in place.
+
+    meta["os"] gets the operating-system hint from the host's latest DHCP
+    request (see core.dhcp.os_hint), and the hostname it announced (option
+    12) fills the Hostname column when no other source named the host.
+    """
+    if listener is None or not listener.running:
+        return
+    matched = 0
+    for ip, meta in metadata.items():
+        request = listener.lookup(meta.get("mac"), ip)
+        if request is None:
+            continue
+        matched += 1
+        # Only record an OS when the fingerprint actually yields one. Writing
+        # meta["os"] = None for an unknown hint leaves a key present-but-None,
+        # which a consumer that tests `"os" in meta` would misread as "known".
+        os_guess = os_hint(request)
+        if os_guess:
+            meta["os"] = os_guess
+        if not meta.get("hostname") and request.hostname:
+            meta["hostname"] = request.hostname
+    log.info("dhcp fingerprints clients=%d matched=%d", len(listener.clients()), matched)
+
+
 _DEEP_SCAN_WORKERS = 16
 
 # Each host is scanned in two nmap passes with separate budgets. Port
@@ -433,18 +477,38 @@ def deep_scan(live_ips: list[str]) -> dict:
 # ══════════════════════════════════════════════════════════════════
 
 class AutoCutSession:
-    """Own response jobs; reconcile targets and restore them before returning."""
+    """Own response jobs; reconcile targets and restore them before returning.
+
+    Every job started and stopped is written to the guard journal (set
+    `network` so the record names the Wi-Fi it happened on), so there is an
+    audit trail of who was cut and when, independent of whether the process
+    exits cleanly.
+    """
+
+    # Marker for "not currently refusing", distinct from any SSID (None
+    # included). Used to dedupe the auto-cut refusal so a daemon left with an
+    # empty allowlist does not append an identical "refused" row every cycle.
+    _UNSET = object()
 
     def __init__(self):
         self.jobs: dict[tuple[str, str, str], tuple[threading.Event, threading.Thread]] = {}
+        self.network: str | None = None
+        self._refused_network = AutoCutSession._UNSET
 
     def update(self, targets: set[tuple[str, str, str]]) -> None:
         for key in list(self.jobs):
             stop, thread = self.jobs[key]
-            if key not in targets or not thread.is_alive():
+            alive = thread.is_alive()
+            if key not in targets or not alive:
                 stop.set()
                 thread.join()
                 del self.jobs[key]
+                # Only a live thread we stop sends corrective ARP on its way
+                # out (poison() restores in its finally). A thread that already
+                # died on its own never restored its victim, so journalling a
+                # "restore" for it would be a false entry in the security trail.
+                if alive:
+                    record_guard_event("restore", ip=key[0], network=self.network)
         for key in targets - self.jobs.keys():
             stop = threading.Event()
             thread = threading.Thread(target=self._run, args=(key, stop))
@@ -454,6 +518,8 @@ class AutoCutSession:
             except BaseException:
                 del self.jobs[key]
                 raise
+            record_guard_event("cut", ip=key[0], network=self.network,
+                               reason="not in trusted_ips")
 
     @staticmethod
     def _run(key, stop):
@@ -468,15 +534,21 @@ class AutoCutSession:
             time.sleep(0.2)
 
     def close(self):
+        # Only threads still alive will send corrective ARP when stopped; ones
+        # that already died never restored their victim, so they must not be
+        # journalled as restored (same reasoning as update()).
+        restored = [key[0] for key, (_, thread) in self.jobs.items() if thread.is_alive()]
         for stop, _ in self.jobs.values():
             stop.set()
         for _, thread in self.jobs.values():
             thread.join()
         self.jobs.clear()
+        for ip in restored:
+            record_guard_event("restore", ip=ip, network=self.network)
 
 
 def cut_unknowns(targets: list[str], my_ip: str, config: dict,
-                 jobs: AutoCutSession | None = None) -> None:
+                 jobs: AutoCutSession | None = None, network: str | None = None) -> None:
     """
     Launch ARP spoofing threads against every IP not in trusted_ips.
 
@@ -486,19 +558,51 @@ def cut_unknowns(targets: list[str], my_ip: str, config: dict,
     from the routing table (not hard-assumed to be .1).
     Jobs are owned by the scan session and stopped when it exits.
 
+    The target set is re-derived from the current scan on every call, never
+    replayed from a saved list, so a device that changed IP is still matched
+    by "not in trusted_ips" and a trusted device that took an old IP is not
+    cut by mistake.
+
+    An empty trusted_ips means "nothing is trusted", which under auto-cut
+    would knock every real device off the network — almost always a
+    misconfiguration rather than an intent. In that case the cut is refused
+    (logged to the guard journal) and the scanner keeps monitoring, so the
+    operator notices without the network going down. The guardian becomes
+    active as soon as trusted_ips is set, which the loop re-reads each cycle.
+
     Args:
         targets : Active IPs found by ping_sweep.
         my_ip   : Local IP of this device.
         config  : Loaded user config dict (needs "trusted_ips" key).
+        network : SSID, recorded with each cut in the guard journal.
     """
     if jobs is None:
         owned = AutoCutSession()
         try:
-            cut_unknowns(targets, my_ip, config, owned)
+            cut_unknowns(targets, my_ip, config, owned, network)
             owned.wait()
         finally:
             owned.close()
         return
+
+    jobs.network = network
+
+    if not config.get("trusted_ips"):
+        if jobs.jobs:
+            jobs.update(set())
+        rprint("[yellow][-] auto-cut needs a non-empty trusted_ips allowlist; "
+               "refusing to cut every device. Monitoring only.[/yellow]")
+        log.warning("auto-cut refused: trusted_ips is empty (network=%s)", network)
+        # Record the refusal once per refusing streak (and again when the SSID
+        # changes), not on every scan cycle of a long-running guardian.
+        if jobs._refused_network != network:
+            record_guard_event("refused", network=network, reason="trusted_ips empty")
+            jobs._refused_network = network
+        return
+
+    # Trust is configured again: clear the refusal state so that a later
+    # removal of trusted_ips is journalled afresh instead of deduped away.
+    jobs._refused_network = AutoCutSession._UNSET
 
     gateway = get_default_gateway(my_ip)
     if not gateway:
@@ -567,15 +671,38 @@ def _build_sentinel_report(ssid: str, live_count: int) -> str:
 
 
 def run_sentinel(interactive: bool = True, auto_cut: bool = False) -> None:
-    """Run scans and ensure all automatic responses stop on exit."""
+    """Run scans and ensure all automatic responses stop on exit.
+
+    The passive DHCP listener runs for the whole session: devices only show
+    up in it when they join or rejoin the network, so the hours of a daemon
+    session are what make it useful. It needs root and stays off otherwise.
+
+    Shutdown is handled for Ctrl+C and for SIGTERM/SIGHUP alike (see
+    core.guard), so a guardian stopped by `systemctl stop` or by closing its
+    terminal still restores every ARP table on the way out. A Termux wake
+    lock keeps a daemon from being frozen by Doze between scans.
+    """
     jobs = AutoCutSession()
+    dhcp = DhcpListener()
+    dhcp.start()
+    if auto_cut:
+        # Create the schema before the first journal write: on a brand-new
+        # database the guard_events table must exist, or this guard_start row
+        # is silently dropped and the trail ends up with an orphan guard_stop.
+        init_db()
+        record_guard_event("guard_start", reason="interactive" if interactive else "daemon")
     try:
-        _run_sentinel_loop(interactive, auto_cut, jobs)
+        with terminating_signals(), wake_lock():
+            _run_sentinel_loop(interactive, auto_cut, jobs, dhcp)
     finally:
+        dhcp.stop()
         jobs.close()
+        if auto_cut:
+            record_guard_event("guard_stop")
 
 
-def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) -> None:
+def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession,
+                       dhcp: DhcpListener | None = None) -> None:
     """
     Main Sentinel loop.
 
@@ -607,7 +734,8 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
             jobs.update(set())
         elif jobs.jobs:
             # Revoke jobs when trust settings change, even between scans.
-            cut_unknowns([key[0] for key in jobs.jobs], info["ip"], config, jobs)
+            cut_unknowns([key[0] for key in jobs.jobs], info["ip"], config, jobs,
+                         network=info.get("ssid"))
 
         # ── Daily DB retention sweep ─────────────────────────────
         # Opt-out by setting db_retention_days <= 0 in config.json.
@@ -654,13 +782,15 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
                 identify_devices(metadata, my_ip)
                 live_ips = list(metadata.keys())
                 results = deep_scan(live_ips)
+                # After the port scan, so requests heard while it ran count too.
+                add_dhcp_fingerprints(metadata, dhcp)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 save_report(current_ssid, results)
                 save_scan(current_ssid, ts, results)
                 display_results_table(current_ssid, results, metadata)
                 log.info("scan finished network=%s hosts=%d", current_ssid, len(live_ips))
                 if auto_cut:
-                    cut_unknowns(live_ips, my_ip, config, jobs)
+                    cut_unknowns(live_ips, my_ip, config, jobs, network=current_ssid)
                 if not live_ips:
                     rprint("[yellow][-] No hosts detected on the network.[/yellow]")
                     log.warning("scan empty network=%s (no hosts detected)",

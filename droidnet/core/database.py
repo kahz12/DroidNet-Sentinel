@@ -20,8 +20,11 @@ import sqlite3
 from contextlib import contextmanager
 
 from droidnet.config import DB_PATH
+from droidnet.core.logger import get_logger
 # classify_risk labels every stored host; callers may also import it from here.
 from droidnet.core.risk import classify_risk, is_port_line
+
+log = get_logger(__name__)
 
 
 def _has_open_ports(ports: list[str]) -> bool:
@@ -102,6 +105,25 @@ def init_db() -> None:
                 notified_key TEXT,  -- "SEVERITY|match_type" last announced; NULL = pending
                 UNIQUE(cve_id, ip, service, network)
             );
+
+            -- Audit journal for the ARP-cut guardian: one row per cut,
+            -- restore, refusal and guardian start/stop. A security trail,
+            -- kept independent of the scan history so purging old scans
+            -- never erases it.
+            CREATE TABLE IF NOT EXISTS guard_events (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      TEXT    NOT NULL DEFAULT (datetime('now')),
+                action  TEXT    NOT NULL,
+                ip      TEXT,
+                network TEXT,
+                reason  TEXT
+            );
+
+            -- get_guard_events reads `ORDER BY id DESC LIMIT ?`, already served
+            -- by the implicit rowid B-tree (id is an INTEGER PRIMARY KEY alias),
+            -- so a dedicated index only added write cost. Drop any left over
+            -- from an earlier schema.
+            DROP INDEX IF EXISTS idx_guard_ts;
 
             -- Indexes for frequent dashboard queries.
             CREATE INDEX IF NOT EXISTS idx_scans_network_id
@@ -586,3 +608,45 @@ def get_latest_scan_with_services() -> dict | None:
                 d["targets"] = targets
                 return d
     return None
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Guard journal
+# ══════════════════════════════════════════════════════════════════
+
+# Actions recorded by the ARP-cut guardian. Anything else is rejected so a
+# typo cannot quietly fill the journal with a bogus action.
+_GUARD_ACTIONS = frozenset({"cut", "restore", "guard_start", "guard_stop", "refused"})
+
+
+def record_guard_event(action: str, ip: str | None = None,
+                       network: str | None = None, reason: str | None = None) -> None:
+    """Append one event to the guard journal. Best-effort: never raises.
+
+    The guardian calls this while cutting and restoring hosts, so a failure
+    to write the journal (a locked or read-only database) must not stop it
+    from sending the corrective ARP frames. The failure is logged instead.
+    """
+    if action not in _GUARD_ACTIONS:
+        log.warning("guard journal: unknown action %r ignored", action)
+        return
+    try:
+        with _conn() as c:
+            c.execute(
+                "INSERT INTO guard_events (action, ip, network, reason) "
+                "VALUES (?, ?, ?, ?)",
+                (action, ip, network, reason),
+            )
+    except sqlite3.Error as exc:
+        log.warning("guard journal write failed (%s): %s", action, exc)
+
+
+def get_guard_events(limit: int = 50) -> list[dict]:
+    """Return the most recent guard-journal events, newest first."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, action, ip, network, reason "
+            "FROM guard_events ORDER BY id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [dict(row) for row in rows]

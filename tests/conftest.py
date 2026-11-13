@@ -49,3 +49,21 @@ def _isolated_history_db(tmp_path, monkeypatch):
     # key from the developer's environment never reaches a test.
     monkeypatch.setattr(config, "EXPLOITDB_DIR", tmp_path / "exploitdb_cache")
     monkeypatch.setattr(config, "VULNERS_API_KEY", "")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dhcp_listener(monkeypatch):
+    """Scan-loop tests get a DHCP listener that never binds port 67.
+
+    The real one would listen on the machine's network whenever the suite
+    runs as root. Tests of the listener itself build their own on a free
+    loopback port.
+    """
+    from droidnet.core.dhcp import DhcpListener
+    from droidnet.modules import sentinel
+
+    class _OffListener(DhcpListener):
+        def start(self) -> bool:
+            return False
+
+    monkeypatch.setattr(sentinel, "DhcpListener", _OffListener)

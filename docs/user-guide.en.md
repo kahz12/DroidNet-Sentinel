@@ -84,7 +84,7 @@ non-interactive subcommands. Under it, the code is organized in layers:
 main.py
   cli/        argument parsing and the interactive Rich menu
   core/       database, environment probe, notifier, risk engine, markup,
-              device identification (router DNS, mDNS, UPnP, Google Cast)
+              device identification (router DNS, mDNS, UPnP, Google Cast, DHCP)
   modules/    sentinel, hunter, cve_watcher, spoofer, deauther
   platform/   cross-platform helpers (Android / Linux)
   web/        the Flask dashboard and its /help guide
@@ -468,6 +468,24 @@ Sentinel is the core. A scan cycle does the following:
    without DNS or UPnP adds nothing; the scan carries on either way. A
    device description is only fetched over plain HTTP from the device
    itself, never from another address.
+
+   **Passive DHCP fingerprints (root).** With root, Sentinel also listens
+   on UDP port 67 for the whole session and records the requests devices
+   broadcast when they join the network: the hostname they announce
+   (option 12), their vendor class (option 60) and their parameter request
+   list (option 55). A randomized MAC hides the maker, not the DHCP client,
+   so the Device column gains a second line with the operating system:
+   `Android 14`, `Windows`, `Apple (iOS/macOS)`, `Linux (Raspberry Pi)`.
+   Only clear signals are turned into a label; any other request list is
+   written to the log as a fingerprint you can look up on fingerbank.org.
+   The listener never sends anything. Lease renewals go straight to the
+   router and are not seen, so a device appears only when it joins or
+   rejoins (a Wi-Fi reconnect, waking from sleep): it is most useful in
+   daemon mode, which runs for hours. A host firewall such as ufw drops
+   these broadcasts unless a rule lets them in (see
+   [Troubleshooting](#16-troubleshooting)); Sentinel warns when ufw is
+   enabled without one. Some access points do not forward one client's
+   broadcasts to the others, and then nothing is heard either.
 4. **Per-host scan, in two passes.** First, the top 100 TCP ports are
    scanned quickly. Then, only on the ports found open, a slower version
    detection identifies the software. Splitting the work matters: version
@@ -595,6 +613,76 @@ WPA3 access points with Management Frame Protection (802.11w) enabled; this
 is by design of the protocol, not a limitation of the tool. Most built-in
 Android chips cannot inject, so on a phone this usually requires an external
 USB adapter.
+
+### 10.7 Guardian mode (continuous auto-cut)
+
+`daemon --auto-cut` turns Sentinel into a crude access-control guard: every
+cycle it re-scans the network and ARP-cuts any host that is not in your
+`trusted_ips` allowlist, so a device that should not be there is kept off
+the LAN. This is destructive and off by default; use it only on a network
+you are authorised to defend.
+
+Two things make it safe to leave running unattended:
+
+- **The allowlist is required.** With an empty `trusted_ips`, "nothing is
+  trusted" would cut every device on the network, so auto-cut refuses and
+  keeps monitoring instead, logging the refusal. It starts guarding the
+  moment you add at least one trusted entry — the daemon re-reads
+  `config.json` each cycle, so no restart is needed.
+- **Targets are never replayed from disk.** The set to cut is re-derived
+  from a fresh scan every cycle. If an intruder changes IP (a DHCP renew),
+  it is still matched by "not in the allowlist"; if a trusted device takes
+  an intruder's old address, it is not cut by mistake. This is why the
+  guardian does not save a target list and "resume" it — re-deriving is both
+  safer and more effective.
+
+**Audit journal.** Every cut, restore and refusal is written to a journal in
+the database, separate from scan history so pruning old scans never erases
+it. Read it with `python main.py guard-log` (newest first; `--limit N` for
+more rows). It answers "who was cut, when, and on which network".
+
+**Shutdown and power.** The guardian repairs the ARP tables of every host it
+cut when it stops — on `Ctrl+C`, and also on `SIGTERM` (`systemctl stop`) and
+`SIGHUP` (closing the terminal). A `SIGKILL` cannot be caught, so a hard kill
+by Android's low-memory or phantom-process killer skips the repair; the
+network then recovers on its own as ARP caches expire, and the journal keeps
+the record. On Termux a wake lock (from `termux-api`) keeps the daemon from
+being frozen by Doze between scans.
+
+**Autostart on boot.** To resume guarding after a reboot, start the daemon
+from the operating system, not from a saved attack state:
+
+- **Linux (systemd).** Create `/etc/systemd/system/droidnet-guard.service`:
+
+  ```ini
+  [Unit]
+  Description=DroidNet Sentinel guardian
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  ExecStart=/path/to/venv/bin/python /path/to/DroidNet-Sentinel/main.py daemon --auto-cut
+  WorkingDirectory=/path/to/DroidNet-Sentinel
+  Restart=on-failure
+  # SIGTERM is used to stop the service, which triggers the ARP restore.
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+  Then `sudo systemctl enable --now droidnet-guard`.
+
+- **Android (Termux).** Install the Termux:Boot add-on and create
+  `~/.termux/boot/droidnet-guard.sh` (make it executable):
+
+  ```bash
+  #!/data/data/com.termux/files/usr/bin/sh
+  termux-wake-lock
+  cd ~/DroidNet-Sentinel && ./venv/bin/python main.py daemon --auto-cut
+  ```
+
+Neither recipe is installed automatically: an advanced operator sets it up on
+purpose, and a casual user never triggers it by accident.
 
 ---
 
@@ -759,7 +847,12 @@ hosts       id, scan_id, ip, risk
 ports       id, host_id, port_entry
 cve_alerts  id, cve_id, severity, score, service, ip, summary,
             impact, network, scan_id, created_at, match_type, notified_key
+guard_events id, ts, action, ip, mac, network, reason
 ```
+
+`guard_events` is the auto-cut audit journal (see
+[Guardian mode](#107-guardian-mode-continuous-auto-cut)); it is not touched
+by the scan-retention purge.
 
 The JSON reports are written in parallel with the database so you can move
 or archive individual scans without the database.
@@ -776,6 +869,7 @@ Most of the tool works without root, but some capabilities need it.
 | Hostname column                 | From nmap, the router's DNS, mDNS, UPnP or Cast | Same                |
 | Device column: model            | From mDNS, UPnP or Cast, for devices that answer | Same               |
 | Device column: MAC vendor       | Empty (the MAC needs ARP, which needs root)    | Populated; private addresses shown as `Randomized MAC` |
+| Device column: OS from DHCP     | Not available (port 67 needs root)             | For devices that join while Sentinel runs; best in daemon mode |
 | CVE Watcher, Hunter, dashboard  | Works                                          | Works                |
 | Spoofer (ARP cut)               | Not available                                  | Required             |
 | Deauther (802.11 deauth)        | Not available                                  | Required             |
@@ -835,6 +929,15 @@ monitor mode and the chipset can inject (the module tests this when
 **NVD requests are slow.**
 Without an API key the public NVD rate limit is low. Set `NVD_API_KEY` to
 raise it. Repeated runs on the same day are served from the local cache.
+
+**DHCP fingerprints never appear, even running as root.**
+A host firewall is the usual cause: tcpdump shows the requests because it
+captures before the firewall, but the listener only receives what the
+firewall lets through. With ufw, allow the requests in:
+`sudo ufw allow proto udp from any port 68 to any port 67`. Sentinel prints
+a warning at start when ufw is enabled without such a rule. Remember that a
+device only sends these requests when it joins the network: reconnect its
+Wi-Fi to see it straight away.
 
 ---
 

@@ -15,6 +15,7 @@ import re
 import platform
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 from rich import print as rprint
@@ -389,6 +390,43 @@ def send_notification(title: str, message: str) -> None:
 
     # message carries the SSID ("N hosts analysed on <SSID>"): escape it.
     rprint(f"[dim][🔔] {escape(str(title))}: {escape(str(message))}[/dim]")
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Power management (Termux)
+# ══════════════════════════════════════════════════════════════════
+
+@contextmanager
+def wake_lock():
+    """Hold a Termux CPU wake lock for the duration of the block.
+
+    Android's Doze mode freezes background processes once the screen is off,
+    which would pause a long-running daemon between scans. `termux-wake-lock`
+    (from termux-api) keeps the CPU awake; the lock is released on exit even
+    if the block raises. Outside Termux, or without termux-api installed,
+    this is a no-op — it keeps nothing awake and the daemon still runs.
+
+    Note: a wake lock does not stop Android from *killing* the process (the
+    low-memory and phantom-process killers still can); it only keeps a living
+    process from being frozen.
+    """
+    held = False
+    if is_termux() and has_command("termux-wake-lock"):
+        try:
+            subprocess.run(["termux-wake-lock"], capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=5)
+            held = True
+        except Exception:
+            pass
+    try:
+        yield held
+    finally:
+        if held:
+            try:
+                subprocess.run(["termux-wake-unlock"], capture_output=True,
+                               stdin=subprocess.DEVNULL, timeout=5)
+            except Exception:
+                pass
 
 
 # ══════════════════════════════════════════════════════════════════

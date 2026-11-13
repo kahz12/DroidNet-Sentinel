@@ -7,6 +7,7 @@ Subcommands (preferred):
     python main.py hunt
     python main.py dashboard [--expose]
     python main.py reports
+    python main.py guard-log [--limit N]
     python main.py cve [--all-time]
     python main.py spoof <VICTIM_IP> <GATEWAY_IP> [--iface IFACE]
     python main.py deauth <TARGET_MAC|broadcast> <BSSID> --iface IFACE
@@ -87,6 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Bind 0.0.0.0 (LAN) instead of 127.0.0.1.")
 
     sub.add_parser("reports", help="List saved reports")
+
+    p_guardlog = sub.add_parser("guard-log", help="Show the ARP-cut audit journal")
+    p_guardlog.add_argument("--limit", type=int, default=50,
+                            help="How many recent events to show (default 50).")
+
     p_cve = sub.add_parser("cve", aliases=["cve-watch"], help="Monitor CVEs")
     p_cve.add_argument("--all-time", action="store_true",
                        help="Full audit: match the detected versions against CVEs of any\n"
@@ -155,6 +161,11 @@ def _run_reports() -> None:
     list_reports()
 
 
+def _run_guard_log(limit: int) -> None:
+    from droidnet.cli.menu import show_guard_log
+    show_guard_log(limit)
+
+
 def _run_cve(all_time: bool = False) -> None:
     from droidnet.modules.cve_watcher import run_cve_watcher
     run_cve_watcher(days_back=None if all_time else 120, show_history=True)
@@ -213,6 +224,9 @@ def handle_args(args: argparse.Namespace) -> bool:
         return True
     if cmd == "reports":
         _run_reports()
+        return True
+    if cmd == "guard-log":
+        _run_guard_log(args.limit)
         return True
     if cmd in ("cve", "cve-watch"):
         _run_cve(args.all_time)
