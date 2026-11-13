@@ -87,7 +87,8 @@ en capas:
 ```
 main.py
   cli/        análisis de argumentos y el menú interactivo (Rich)
-  core/       base de datos, sondeo del entorno, notificador, motor de riesgo, escape de texto
+  core/       base de datos, sondeo del entorno, notificador, motor de riesgo, escape de texto,
+              identificación de dispositivos (DNS del router, mDNS, UPnP, Google Cast)
   modules/    sentinel, hunter, cve_watcher, spoofer, deauther
   platform/   utilidades multiplataforma (Android / Linux)
   web/        el panel Flask y su guía en /help
@@ -98,12 +99,14 @@ Un ciclo de escaneo normal, que realiza el módulo Sentinel, consiste en:
 1. Leer el nombre de la red (SSID) y la IP local.
 2. Hacer un barrido de la subred `/24` local para encontrar dispositivos
    activos.
-3. Escanear cada dispositivo activo: primero sus puertos y luego las
+3. Preguntar al router, por mDNS, por UPnP y por Google Cast el nombre y el
+   modelo de cada dispositivo.
+4. Escanear cada dispositivo activo: primero sus puertos y luego las
    versiones del software en los puertos abiertos.
-4. Clasificar cada dispositivo por riesgo según los puertos que expone.
-5. Guardar el resultado en la base de datos SQLite y en un archivo JSON con
+5. Clasificar cada dispositivo por riesgo según los puertos que expone.
+6. Guardar el resultado en la base de datos SQLite y en un archivo JSON con
    marca de tiempo.
-6. Opcionalmente cortar los dispositivos no confiables y enviar
+7. Opcionalmente cortar los dispositivos no confiables y enviar
    notificaciones.
 
 Los demás módulos trabajan sobre el resultado de un escaneo: Hunter y CVE
@@ -460,7 +463,29 @@ Sentinel es el núcleo. Un ciclo de escaneo hace lo siguiente:
 2. **Descubrimiento.** Un barrido de la `/24` local encuentra los
    dispositivos activos. Cuando un primer intento falla por completo (no
    simplemente una red vacía), se reintenta en el ciclo siguiente.
-3. **Escaneo por dispositivo, en dos pasadas.** Primero se escanean rápido
+3. **Identificación.** Cuatro fuentes rellenan las columnas Hostname y
+   Device, en paralelo, en pocos segundos y sin root:
+   - el DNS inverso del router, que en la mayoría de routers domésticos
+     devuelve el nombre que cada dispositivo dio por DHCP;
+   - mDNS (Bonjour/Avahi), preguntado directamente a cada dispositivo: su
+     nombre `.local`, su modelo (dispositivos Apple, Chromecast, dispositivos
+     AirPlay y HomeKit, impresoras de red) y el nombre que le puso su dueño;
+   - una búsqueda SSDP: routers, smart TVs, altavoces y servidores
+     multimedia describen su fabricante y modelo por UPnP;
+   - la descripción que los dispositivos Google Cast sirven en el puerto
+     8008, que identifica Chromecasts y Google TVs que no responden ni a
+     mDNS ni a SSDP.
+
+   Si nmap ya encontró un hostname, se conserva. La columna Device muestra
+   el modelo cuando el dispositivo lo dio y, si no, el fabricante de la MAC.
+   Cuando se conoce la MAC pero no su prefijo (normalmente un móvil con
+   dirección privada por red), muestra `Randomized MAC`. Es lo normal en
+   Android e iOS, así que es solo informativo y no cambia el riesgo. Los
+   móviles sin ninguna app que anuncie servicios a menudo no responden a
+   ninguna de estas consultas, y un router sin DNS ni UPnP no añade nada; el
+   escaneo sigue igual. La descripción de un dispositivo solo se descarga
+   por HTTP plano del propio dispositivo, nunca de otra dirección.
+4. **Escaneo por dispositivo, en dos pasadas.** Primero se escanean rápido
    los 100 puertos TCP más comunes. Luego, solo en los puertos abiertos, una
    detección de versiones más lenta identifica el software. Separar el
    trabajo importa: la detección de versiones puede ser lenta cuando un
@@ -468,17 +493,17 @@ Sentinel es el núcleo. Un ciclo de escaneo hace lo siguiente:
    fallida conserva igualmente la lista de puertos abiertos, de modo que el
    dispositivo se evalúa de todas formas. Cada pasada tiene su propio límite
    de tiempo.
-4. **Clasificación de riesgo.** Cada dispositivo se puntúa según los puertos
+5. **Clasificación de riesgo.** Cada dispositivo se puntúa según los puertos
    que expone (ver [Niveles de riesgo](#11-niveles-de-riesgo)). Un
    dispositivo con todos los puertos cerrados o filtrados se informa como
    protegido. Un dispositivo que no se pudo escanear se escanea una vez
    más cuando terminan todos los demás; si vuelve a fallar, queda como
    `UNKNOWN`.
-5. **Persistencia.** El resultado se escribe en la base de datos SQLite y en
+6. **Persistencia.** El resultado se escribe en la base de datos SQLite y en
    un archivo JSON con marca de tiempo en `reports/`. Un escaneo completo que
    no encuentra dispositivos también se guarda, para que el panel pueda
    mostrar que hubo dispositivos que desaparecieron.
-6. **Respuesta activa y alertas (opcional).** Con `--auto-cut`, los
+7. **Respuesta activa y alertas (opcional).** Con `--auto-cut`, los
    dispositivos no confiables se cortan. En todos los casos se envía una
    notificación del sistema operativo y, si está configurada, una alerta de
    Telegram.
@@ -787,7 +812,9 @@ necesitan.
 | Función                              | Sin root                                        | Con root               |
 |--------------------------------------|-------------------------------------------------|------------------------|
 | Descubrimiento y escaneo de puertos  | Funciona (usa sondas basadas en TCP)            | Funciona (puede usar ARP/ICMP) |
-| Columnas de hostname y MAC/fabricante | Normalmente vacías (la MAC necesita sondas privilegiadas) | Rellenas    |
+| Columna Hostname                     | De nmap, del DNS del router, de mDNS, UPnP o Cast | Igual                |
+| Columna Device: modelo               | De mDNS, UPnP o Cast, en los dispositivos que responden | Igual          |
+| Columna Device: fabricante de la MAC | Vacía (la MAC necesita ARP, que necesita root)  | Rellena; las direcciones privadas se muestran como `Randomized MAC` |
 | CVE Watcher, Hunter, panel           | Funciona                                        | Funciona               |
 | Spoofer (corte ARP)                  | No disponible                                   | Obligatorio            |
 | Deauther (deauth 802.11)             | No disponible                                   | Obligatorio            |

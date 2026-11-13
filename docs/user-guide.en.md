@@ -83,7 +83,8 @@ non-interactive subcommands. Under it, the code is organized in layers:
 ```
 main.py
   cli/        argument parsing and the interactive Rich menu
-  core/       database, environment probe, notifier, risk engine, markup
+  core/       database, environment probe, notifier, risk engine, markup,
+              device identification (router DNS, mDNS, UPnP, Google Cast)
   modules/    sentinel, hunter, cve_watcher, spoofer, deauther
   platform/   cross-platform helpers (Android / Linux)
   web/        the Flask dashboard and its /help guide
@@ -93,11 +94,12 @@ A normal scan cycle, performed by the Sentinel module, is:
 
 1. Read the current SSID and the local IP address.
 2. Ping-sweep the local `/24` subnet to find live hosts.
-3. Scan each live host: first its ports, then the software versions on the
+3. Ask the router, mDNS, UPnP and Google Cast for each host's name and model.
+4. Scan each live host: first its ports, then the software versions on the
    ports that are open.
-4. Classify each host by risk from the set of ports it exposes.
-5. Save the result to the SQLite database and to a timestamped JSON file.
-6. Optionally cut untrusted hosts, then send notifications.
+5. Classify each host by risk from the set of ports it exposes.
+6. Save the result to the SQLite database and to a timestamped JSON file.
+7. Optionally cut untrusted hosts, then send notifications.
 
 The other modules build on the results of a scan: Hunter and CVE Watcher
 read the latest saved scan, and the dashboard reads the whole history.
@@ -444,21 +446,43 @@ Sentinel is the core. A scan cycle does the following:
 2. **Discovery.** A ping sweep of the local `/24` finds live hosts. When a
    first attempt fails entirely (not merely an empty network), it is retried
    on the next cycle.
-3. **Per-host scan, in two passes.** First, the top 100 TCP ports are
+3. **Identification.** Four sources fill in the Hostname and Device
+   columns, in parallel and within a few seconds, without root:
+   - the router's reverse DNS, which on most home routers returns the name
+     each device gave over DHCP;
+   - mDNS (Bonjour/Avahi) asked of each host directly: its `.local` name,
+     its model (Apple devices, Chromecasts, AirPlay and HomeKit devices,
+     network printers) and the name its owner gave it;
+   - one SSDP search: routers, smart TVs, speakers and media servers
+     describe their maker and model over UPnP;
+   - the description Google Cast devices serve on port 8008, which
+     identifies Chromecasts and Google TVs that answer neither mDNS nor
+     SSDP.
+
+   A hostname nmap found is kept. The Device column shows the model when a
+   device reported one, otherwise the MAC vendor. When the MAC is known but
+   its prefix is not (usually a phone using a per-network private address),
+   it says `Randomized MAC`. That is the default on Android and iOS, so it is
+   shown for information only and does not change the risk. Phones without
+   any app advertising a service often answer none of these, and a router
+   without DNS or UPnP adds nothing; the scan carries on either way. A
+   device description is only fetched over plain HTTP from the device
+   itself, never from another address.
+4. **Per-host scan, in two passes.** First, the top 100 TCP ports are
    scanned quickly. Then, only on the ports found open, a slower version
    detection identifies the software. Splitting the work matters: version
    detection can be slow when a service does not answer probes, and a slow
    or failed version pass still keeps the open-port list, so the host is
    still assessed. Each pass has its own time budget.
-4. **Risk classification.** Each host is scored from the ports it exposes
+5. **Risk classification.** Each host is scored from the ports it exposes
    (see [Risk levels](#11-risk-levels)). A host whose ports are all closed
    or filtered is reported as protected. A host that could not be scanned
    is scanned once more after all the others have finished; if that also
    fails, it is `UNKNOWN`.
-5. **Persistence.** The result is written to the SQLite database and to a
+6. **Persistence.** The result is written to the SQLite database and to a
    timestamped JSON file under `reports/`. A completed scan that finds no
    hosts is saved too, so the dashboard can show that devices disappeared.
-6. **Active response and alerts (optional).** With `--auto-cut`, untrusted
+7. **Active response and alerts (optional).** With `--auto-cut`, untrusted
    hosts are cut. In all cases an OS notification and, if configured, a
    Telegram alert are sent.
 
@@ -749,7 +773,9 @@ Most of the tool works without root, but some capabilities need it.
 | Feature                         | Without root                                   | With root            |
 |---------------------------------|------------------------------------------------|----------------------|
 | Discovery and port scanning     | Works (uses TCP-based probes)                  | Works (can use ARP/ICMP) |
-| Hostname and MAC/vendor columns | Usually empty (MAC needs privileged probes)    | Populated            |
+| Hostname column                 | From nmap, the router's DNS, mDNS, UPnP or Cast | Same                |
+| Device column: model            | From mDNS, UPnP or Cast, for devices that answer | Same               |
+| Device column: MAC vendor       | Empty (the MAC needs ARP, which needs root)    | Populated; private addresses shown as `Randomized MAC` |
 | CVE Watcher, Hunter, dashboard  | Works                                          | Works                |
 | Spoofer (ARP cut)               | Not available                                  | Required             |
 | Deauther (802.11 deauth)        | Not available                                  | Required             |

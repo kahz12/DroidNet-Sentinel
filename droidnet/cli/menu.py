@@ -364,8 +364,9 @@ def _run_hunter() -> None:
 
 def _run_dashboard() -> None:
     from droidnet.web.dashboard import app, _print_startup_banner
-    # From the interactive menu, the bind is always loopback. To
-    # expose to LAN, use the CLI: `python main.py --dashboard --expose`.
+    # From the interactive menu the dashboard always binds to loopback.
+    # Exposing it on the LAN is a deliberate choice made on the command
+    # line: `python main.py dashboard --expose`.
     _print_startup_banner(host="127.0.0.1")
     rprint("[dim]Press Ctrl+C to stop.[/dim]\n")
     try:

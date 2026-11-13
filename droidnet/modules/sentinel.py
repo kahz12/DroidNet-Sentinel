@@ -2,7 +2,7 @@
 Core Scanner Module — network discovery, port scanning and ARP response.
 
 Flow per cycle:
-    get_wifi_info → ping_sweep → deep_scan → evaluate_risk
+    get_wifi_info → ping_sweep → identify_devices → deep_scan → evaluate_risk
                  → save_report → display_table → cut_unknowns
                  → send_alert
 """
@@ -29,10 +29,12 @@ from droidnet.config       import (
     load_user_config,
 )
 from droidnet.core.database  import init_db, save_scan, purge_old_scans
+from droidnet.core.devices   import is_locally_administered, mdns_probe, reverse_lookup
 from droidnet.core.logger    import get_logger
 from droidnet.core.markup    import esc
 from droidnet.core.risk      import classify_risk, is_scan_error
 from droidnet.core.notifier  import send_alert, escape_html
+from droidnet.core.upnp      import cast_probe, ssdp_probe
 from droidnet.platform.utils import get_default_iface, get_default_gateway, get_wifi_info
 
 log = get_logger(__name__)
@@ -65,6 +67,21 @@ def evaluate_risk(ports: list[str]) -> str:
 #  Display
 # ══════════════════════════════════════════════════════════════════
 
+def _device_cell(meta: dict) -> str:
+    """Device column: the model the device reported, else nmap's OUI vendor,
+    else a note for a randomized MAC.
+
+    The vendor beats the note when nmap knows the prefix: a few locally
+    administered prefixes are real (QEMU's 52:54:00). A randomized MAC is
+    the default on modern phones, so the note is informational and never
+    affects risk.
+    """
+    label = meta.get("model") or meta.get("vendor")
+    if not label and is_locally_administered(meta.get("mac")):
+        return "[italic]Randomized MAC[/italic]"
+    return esc(label or "—")
+
+
 def display_results_table(
     ssid: str,
     scan_data: dict,
@@ -76,8 +93,8 @@ def display_results_table(
     Args:
         ssid      : Network name shown in the title.
         scan_data : {ip: [port_entries]} from deep_scan.
-        metadata  : Optional {ip: {hostname, mac, vendor}} from ping_sweep
-                    to enrich the table with extra columns.
+        metadata  : Optional {ip: {hostname, mac, vendor, model}} from
+                    ping_sweep and identify_devices, to enrich the table.
     """
     metadata = metadata or {}
 
@@ -88,34 +105,34 @@ def display_results_table(
     )
     table.add_column("Target (IP)",       style="dim",   width=15)
     table.add_column("Hostname",          style="white", width=18, overflow="fold")
-    table.add_column("Vendor",            style="dim",   width=18, overflow="fold")
+    table.add_column("Device",            style="dim",   width=18, overflow="fold")
     table.add_column("Risk",              justify="center")
     table.add_column("Ports/Versions",    style="green")
     table.add_column("Services",          style="yellow")
 
     for ip, results in scan_data.items():
         meta     = metadata.get(ip, {})
-        # Hostname (DHCP / mDNS), vendor and banners are set by the devices
-        # themselves; table cells are parsed as markup, so escape them.
+        # Hostname (DHCP / mDNS), model, vendor and banners are set by the
+        # devices themselves; table cells are parsed as markup, so escape them.
         ip_cell  = esc(ip)
         hostname = esc(meta.get("hostname") or "—")
-        vendor   = esc(meta.get("vendor")   or "—")
+        device   = _device_cell(meta)
         risk     = evaluate_risk(results)
 
         if results == ["Shield intact"]:
             table.add_row(
-                ip_cell, hostname, vendor, risk,
+                ip_cell, hostname, device, risk,
                 "[blue]Closed[/blue]", "Protected device",
             )
         elif results and is_scan_error(results[0]):
             table.add_row(
-                ip_cell, hostname, vendor, "[white]???[/white]",
+                ip_cell, hostname, device, "[white]???[/white]",
                 "[red]Failed[/red]", "Scan error",
             )
         else:
             ports    = "\n".join(p.split()[0]           for p in results)
             services = "\n".join(" ".join(p.split()[2:]) for p in results)
-            table.add_row(ip_cell, hostname, vendor, risk, esc(ports), esc(services))
+            table.add_row(ip_cell, hostname, device, risk, esc(ports), esc(services))
 
     console.print("\n", table, "\n")
 
@@ -193,6 +210,63 @@ def ping_sweep(ip_address: str, excluded: list[str]) -> dict[str, dict] | None:
     # An empty successful primary remains valid even if the optional fallback
     # is unavailable. None means neither command completed a usable scan.
     return {} if completed_empty else None
+
+
+def _probe_result(future, source: str) -> dict:
+    """A probe's result, or {} if it was skipped or failed: names and models
+    are extras, so a failing probe never costs the scan."""
+    if future is None:
+        return {}
+    try:
+        return future.result() or {}
+    except Exception:
+        log.exception("device identification failed source=%s", source)
+        return {}
+
+
+def identify_devices(metadata: dict[str, dict], my_ip: str) -> None:
+    """Add names and models to *metadata* in place, from what devices say.
+
+    Four sources run in parallel, each with a deadline of a few seconds:
+      - the router's reverse DNS, which on most home routers returns the
+        name each device sent over DHCP (nmap asks the system resolver,
+        which on Termux is a public server that knows no LAN names);
+      - mDNS asked of each host: its .local name, a model, the name its
+        owner gave it;
+      - UPnP descriptions found with one SSDP search: maker and model;
+      - the description Google Cast devices serve on port 8008, for the
+        Chromecasts and Google TVs that answer neither mDNS nor SSDP.
+
+    A hostname nmap found is kept; otherwise the router's, then the mDNS
+    host name, then the owner's name for the device (mDNS, then UPnP, then
+    Cast). The model is taken in that same source order. None of it needs
+    root, and a source that fails or is not there adds nothing.
+    """
+    ips = list(metadata)
+    if not ips:
+        return
+    missing = [ip for ip in ips if not metadata[ip].get("hostname")]
+    gateway = get_default_gateway(my_ip) if missing else None
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        router = pool.submit(reverse_lookup, missing, gateway) if gateway else None
+        mdns   = pool.submit(mdns_probe, ips)
+        ssdp   = pool.submit(ssdp_probe, my_ip, ips)
+        cast   = pool.submit(cast_probe, ips)
+        router_names = _probe_result(router, "router-dns")
+        mdns_hints   = _probe_result(mdns, "mdns")
+        upnp_hints   = _probe_result(ssdp, "ssdp")
+        cast_hints   = _probe_result(cast, "cast")
+
+    for ip, meta in metadata.items():
+        # Most specific first: mDNS names the exact model ("Google Nest
+        # Mini"); a UPnP or Cast description often names only the product line.
+        sources = (mdns_hints.get(ip, {}), upnp_hints.get(ip, {}), cast_hints.get(ip, {}))
+        meta["model"] = next((s["model"] for s in sources if s.get("model")), None)
+        if not meta.get("hostname"):
+            meta["hostname"] = (router_names.get(ip) or sources[0].get("hostname")
+                                or next((s["name"] for s in sources if s.get("name")), None))
+    log.info("device identification hosts=%d router_names=%d mdns=%d upnp=%d cast=%d",
+             len(ips), len(router_names), len(mdns_hints), len(upnp_hints), len(cast_hints))
 
 
 _DEEP_SCAN_WORKERS = 16
@@ -577,6 +651,7 @@ def _run_sentinel_loop(interactive: bool, auto_cut: bool, jobs: AutoCutSession) 
                         break
                     time.sleep(CHECK_INTERVAL)
                     continue
+                identify_devices(metadata, my_ip)
                 live_ips = list(metadata.keys())
                 results = deep_scan(live_ips)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")

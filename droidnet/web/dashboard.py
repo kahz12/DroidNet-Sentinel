@@ -24,8 +24,10 @@ Routes:
     GET  /api/alerts         → CVE alerts as JSON      (auth required)
 
 Data source:
-    SQLite via droidnet.core.database (sentinel.db in project root).
-    JSON flat files are still written by sentinel.py for portability.
+    SQLite via droidnet.core.database (sentinel.db in the project root).
+    Sentinel also writes each scan to a JSON file under reports/, which can
+    be moved or archived without the database; the dashboard does not read
+    those files.
 """
 
 import hmac

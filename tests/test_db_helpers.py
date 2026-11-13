@@ -185,7 +185,8 @@ def test_init_db_migrates_cve_alerts_unique_key(tmp_path: Path, monkeypatch):
     rows = dbmod.get_cve_alerts()
     assert any(r["cve_id"] == "CVE-2024-1" and r["network"] == "home" for r in rows)
 
-    # The same CVE/ip/service now registers under a different network.
+    # With `network` in the key, the same CVE/ip/service can be stored again
+    # for a second network.
     new_id = dbmod.save_cve_alert(cve_id="CVE-2024-1", severity="HIGH", score=7.5,
                                   service="http", ip="10.0.0.9", summary="s",
                                   impact=None, network="office")

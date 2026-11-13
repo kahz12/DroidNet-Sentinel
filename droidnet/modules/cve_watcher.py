@@ -1,19 +1,21 @@
 """
-CVE-Watcher Module — monitors recent CVEs and cross-references with scanned network.
+CVE Watcher — matches the software found by the last scan against NVD.
 
 Flow:
-    1. Load latest scan from DB (services + versions per host)
-    2. Extract software keywords (CPE-like) from nmap service banners
-    3. Query NIST NVD API for recent CVEs matching each keyword
-    4. Score matches, generate human-readable impact summary
-    5. Persist alerts to DB + notify via Telegram / local
+    1. Load the newest scan in the history DB that detected services.
+    2. Turn each nmap banner into one query per (product, version).
+    3. Ask the NIST NVD API for that version's CVEs: a cpeName query (NVD's
+       own version match, for products in the CPE map) plus a description
+       search, which also reaches CVEs NVD has not analysed yet. By default
+       only CVEs published in the last 120 days count; a full audit drops
+       the publication-date filter.
+    4. Score each match and write a short impact summary for it.
+    5. Store the alerts and announce only the new or changed ones, over
+       Telegram and a local notification.
 
 Requires:
-    Internet access for NVD API queries (no API key needed for basic use,
-    but rate-limited to ~5 requests per 30 seconds without a key).
-
-Optional:
-    Set NVD_API_KEY env var for higher rate limits.
+    Internet access to the NVD API. No key is needed, but keyless clients
+    are limited to 5 requests per 30 seconds; NVD_API_KEY raises that to 50.
 """
 
 import hashlib
@@ -632,9 +634,11 @@ def query_nvd(
     return results
 
 
-# Metric blocks in order of preference. CVSS 3.x stays first so scores of
-# CVEs that have it do not change; CVSS 4.0 is often the only score a CNA
-# supplies on a fresh CVE (~10% of new CVEs), and v2 is legacy.
+# Metric blocks in order of preference. CVSS 3.x comes first: almost every
+# analysed CVE carries it, so alerts scored with it stay comparable with one
+# another. CVSS 4.0 is used when it is the only score, which is common on
+# fresh CVEs whose CNA supplies nothing else (~10% of new CVEs). v2 is the
+# last resort, for old CVEs scored before 3.0 existed.
 _CVSS_METRIC_KEYS = ("cvssMetricV31", "cvssMetricV30", "cvssMetricV40", "cvssMetricV2")
 _CVSS_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"}
 
@@ -759,9 +763,14 @@ _REMOTE_HINT = re.compile(r"\bremote(?:ly)?\b", re.I)
 
 def generate_impact_summary(cve: dict, service_info: dict, affected_ips: list[str]) -> str:
     """
-    Generate a human-readable impact assessment.
+    One-line impact summary for an alert, with " | " between its parts.
 
-    Analyzes the CVE description and context to produce actionable insight.
+    It names the affected service and how many hosts run it (flagging a
+    candidate match whose versions come from the description), whether CISA
+    lists the CVE as exploited in the wild, how it can be attacked (remote
+    per the CVSS attack vector, plus whole-word cues from the description),
+    its CWE weaknesses, and a recommendation scaled to KEV status, severity
+    and score.
     """
     desc = cve["description"]
     severity = cve["severity"]
@@ -1033,7 +1042,9 @@ def run_cve_watcher(days_back: int | None = 120, show_history: bool = False) -> 
         rprint(f"[bold cyan][\u2026][/bold cyan] Searching NVD descriptions: [yellow]{esc(name)}[/yellow]")
         described = query_nvd(name, days_back=days_back)
         if described is None:
-            all_matches.failed_queries.append(kw["keyword"])   # CPE matches still count
+            # The service is reported as incompletely analysed, but the CPE
+            # matches found above are real and are kept.
+            all_matches.failed_queries.append(kw["keyword"])
             described = []
         candidates = _keyword_candidates(
             described, name, kw["version"], cpe_checked=bool(cpe_names),

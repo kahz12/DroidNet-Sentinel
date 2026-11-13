@@ -8,7 +8,8 @@ requests>=2.31,<3
 rich>=13.7,<14
 flask>=3.0,<4
 
-# Optional: only if using deauther.py on Linux/PC
+# Optional: needed by the Deauther, and by the Spoofer when arpspoof (dsniff)
+# is not installed. Everything else runs without it.
 scapy>=2.5,<3
 
 # Rate limiting and CSRF are implemented by the dashboard itself.

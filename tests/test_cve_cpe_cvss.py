@@ -28,7 +28,7 @@ def cpe(vendor_product: str, version: str, update: str = "*") -> str:
     ("ProFTPD", "1.3.6rc4", cpe("proftpd:proftpd", "1.3.6", "rc4")),
     # Oracle owns MySQL; mysql:mysql has no recent dictionary entries.
     ("MySQL",   "8.0.36",   cpe("oracle:mysql", "8.0.36")),
-    # Unchanged behaviour for plain versions.
+    # A plain version has no release suffix, so the update field stays "*".
     ("Apache httpd", "2.4.29", cpe("apache:http_server", "2.4.29")),
     ("nginx",        "1.18.0", cpe("nginx:nginx", "1.18.0")),
     ("MariaDB",      "10.3.34", cpe("mariadb:mariadb", "10.3.34")),

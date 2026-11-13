@@ -22,7 +22,8 @@ console = Console()
 
 def evaluate_system() -> dict:
     """
-    Interrogate the host to determine tactical capabilities.
+    Probe what this host offers the modules: platform, privileges, the
+    active network interface and which external tools are installed.
 
     Returns:
         dict with keys:

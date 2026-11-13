@@ -2,9 +2,9 @@
 Source-level guards for the project's security invariants.
 
 These tests do not exercise behaviour — they enforce invariants by
-scanning the source tree. If a future commit reintroduces shell=True,
-turns off TLS verification, or concatenates a raw SSID into a path,
-one of these tests will fail in CI.
+scanning the source tree. A change that introduces shell=True, turns off
+TLS verification, or concatenates a raw SSID into a path makes one of
+these tests fail in CI.
 """
 
 import ast
@@ -103,8 +103,9 @@ def test_scan_id_route_uses_int_converter():
 def test_ssid_path_uses_sanitizer():
     """
     save_report() must run the SSID through _sanitize_ssid before joining
-    it to REPORTS_DIR, enforcing the "path traversal closed" invariant if
-    someone refactors the function.
+    it to REPORTS_DIR. The SSID is chosen by whoever runs the access point,
+    so a raw "../" in it would write the report outside reports/; this
+    keeps that guarantee whenever the function is rewritten.
     """
     src = (DROIDNET / "modules" / "sentinel.py").read_text()
     tree = ast.parse(src)

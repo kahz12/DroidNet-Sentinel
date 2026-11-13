@@ -31,6 +31,9 @@ a network you are not authorized to disrupt.
 
 - **Discovery and scanning.** Ping-sweep of the local `/24`, then a two-pass
   per-host scan: top 100 TCP ports, then version detection on the open ones.
+- **Device identification.** Names and models from the router's DNS, mDNS,
+  UPnP and Google Cast, without root; randomized (private) MACs are flagged
+  as such.
 - **Risk engine.** Per-host classification (CRITICAL / MEDIUM / LOW / MINIMAL
   / UNKNOWN) from a single shared rule.
 - **Diff history.** New hosts, disappeared hosts and port changes between
