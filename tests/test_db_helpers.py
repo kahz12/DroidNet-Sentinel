@@ -3,6 +3,7 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
 
 from droidnet.core.database import _compute_diff, _has_open_ports
 
@@ -42,6 +43,48 @@ def test_diff_port_added_and_removed():
         "added":   ["443/tcp open https"],
         "removed": ["21/tcp open ftp"],
     }}
+
+
+def test_diff_host_that_closed_every_port_shows_only_removed_ports():
+    # Seen in a real scan: a Cast device's ports closed. "Shield intact" is a
+    # host state, not a service, and must not be listed as an added port.
+    curr = {"1.1.1.1": ["Shield intact"]}
+    prev = {"1.1.1.1": ["8008/tcp open http", "8009/tcp open ajp13"]}
+    _, _, changes = _compute_diff(curr, prev)
+    assert changes == {"1.1.1.1": {
+        "added":   [],
+        "removed": ["8008/tcp open http", "8009/tcp open ajp13"],
+    }}
+
+
+def test_diff_host_that_opened_ports_shows_only_added_ports():
+    curr = {"1.1.1.1": ["22/tcp open ssh"]}
+    prev = {"1.1.1.1": ["Shield intact"]}
+    _, _, changes = _compute_diff(curr, prev)
+    assert changes == {"1.1.1.1": {"added": ["22/tcp open ssh"], "removed": []}}
+
+
+def test_diff_marker_only_hosts_have_no_port_changes():
+    curr = {"1.1.1.1": ["Shield intact"], "2.2.2.2": []}
+    prev = {"1.1.1.1": [], "2.2.2.2": ["Shield intact"]}
+    assert _compute_diff(curr, prev) == ([], [], {})
+
+
+@pytest.mark.parametrize("curr, prev", [
+    (["80/tcp open http"], ["Error: timeout"]),     # failed before: no baseline
+    (["Error"],            ["80/tcp open http"]),   # failed now: state unknown
+    (["Error: host unreachable"], ["Shield intact"]),
+])
+def test_diff_skips_hosts_whose_scan_failed_on_either_side(curr, prev):
+    assert _compute_diff({"1.1.1.1": curr}, {"1.1.1.1": prev}) == ([], [], {})
+
+
+def test_diff_banner_mentioning_error_is_still_a_port():
+    # Only the exact markers are errors; a banner may contain the word.
+    curr = {"1.1.1.1": ["80/tcp open http Apache httpd (Error page)"]}
+    prev = {"1.1.1.1": ["Shield intact"]}
+    _, _, changes = _compute_diff(curr, prev)
+    assert changes["1.1.1.1"]["added"] == ["80/tcp open http Apache httpd (Error page)"]
 
 
 def test_diff_results_are_sorted():

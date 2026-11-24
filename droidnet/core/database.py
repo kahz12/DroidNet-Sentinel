@@ -23,7 +23,7 @@ from contextvars import ContextVar
 from droidnet.config import DB_PATH
 from droidnet.core.logger import get_logger
 # classify_risk labels every stored host; callers may also import it from here.
-from droidnet.core.risk import classify_risk, is_port_line
+from droidnet.core.risk import classify_risk, is_port_line, is_scan_error
 
 log = get_logger(__name__)
 
@@ -298,7 +298,11 @@ def _compute_diff(
     """
     Compare two target dicts and return (new_ips, gone_ips, port_changes).
 
-    port_changes: {ip: {"added": [...], "removed": [...]}}
+    port_changes: {ip: {"added": [...], "removed": [...]}}, open-port lines
+    only. Markers are host states, not services: a host that closed every
+    port shows its ports as removed, never "Shield intact" as added. A host
+    whose scan failed in either snapshot has no reliable baseline, so it gets
+    no port changes at all; its UNKNOWN risk already says it was not assessed.
     """
     curr_ips = set(curr_targets)
     prev_ips = set(prev_targets)
@@ -308,8 +312,13 @@ def _compute_diff(
 
     port_changes: dict[str, dict] = {}
     for ip in curr_ips & prev_ips:
-        added   = sorted(set(curr_targets[ip]) - set(prev_targets[ip]))
-        removed = sorted(set(prev_targets[ip]) - set(curr_targets[ip]))
+        curr, prev = curr_targets[ip], prev_targets[ip]
+        if any(is_scan_error(entry) for entry in (*curr, *prev)):
+            continue
+        curr_ports = {entry for entry in curr if is_port_line(entry)}
+        prev_ports = {entry for entry in prev if is_port_line(entry)}
+        added   = sorted(curr_ports - prev_ports)
+        removed = sorted(prev_ports - curr_ports)
         if added or removed:
             port_changes[ip] = {"added": added, "removed": removed}
 
