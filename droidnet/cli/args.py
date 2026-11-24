@@ -173,7 +173,7 @@ def _run_cve(all_time: bool = False) -> None:
 
 def _run_spoof(victim: str, gateway: str, iface: str | None) -> bool:
     if not check_root():
-        rprint("[red][x] Root privileges required.[/red]")
+        rprint("[red][✗] Root privileges required.[/red]")
         return True
     from droidnet.modules.spoofer import poison
     poison(victim, gateway, iface or get_default_iface())
@@ -183,7 +183,7 @@ def _run_spoof(victim: str, gateway: str, iface: str | None) -> bool:
 def _run_deauth(target: str, bssid: str, iface: str,
                 channel: int | None, count: int) -> bool:
     if not check_root():
-        rprint("[red][x] Root privileges required.[/red]")
+        rprint("[red][✗] Root privileges required.[/red]")
         return True
     from droidnet.modules.deauther import deauth_target, BROADCAST
     mac = BROADCAST if target.lower() == "broadcast" else target
@@ -272,7 +272,7 @@ def handle_args(args: argparse.Namespace) -> bool:
         _legacy_warn("--spoof",
                      "droidnet spoof <VICTIM> <GATEWAY> [--iface IFACE]")
         if len(args.spoof) < 2:
-            rprint("[red][x] --spoof needs at least <VICTIM_IP> <GATEWAY_IP>.[/red]")
+            rprint("[red][✗] --spoof needs at least <VICTIM_IP> <GATEWAY_IP>.[/red]")
             return True
         iface = args.spoof[2] if len(args.spoof) > 2 else None
         return _run_spoof(args.spoof[0], args.spoof[1], iface)

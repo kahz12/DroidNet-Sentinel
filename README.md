@@ -45,8 +45,9 @@ a network you are not authorized to disrupt.
   watch mode or a full audit of any date.
 - **Active response.** Manual or automatic ARP cut; 802.11 deauthentication.
 - **Guardian mode.** `daemon --auto-cut` continuously cuts anything not in
-  your allowlist, with an audit journal, graceful ARP restore on SIGTERM/SIGHUP
-  and a documented boot autostart; it refuses to run with an empty allowlist.
+  your allowlist, with an audit journal (`guard-log`), graceful ARP restore on
+  SIGTERM/SIGHUP and a documented boot autostart; it refuses to run with an
+  empty allowlist.
 - **Web dashboard.** Authenticated Flask UI with scan history, diffs, a CVE
   alerts view filterable by network, host and severity, and an in-app guide.
 - **Alerting.** Desktop/Termux notifications and Telegram.
@@ -122,13 +123,17 @@ python main.py hunt                        # exploit lookup
 python main.py cve [--all-time]            # CVE Watcher (120-day watch, or full audit)
 python main.py dashboard [--expose]        # web UI (loopback by default)
 python main.py reports                     # list saved reports
+python main.py guard-log [--limit N]       # ARP-cut audit journal, newest first
 python main.py spoof VICTIM GATEWAY        # ARP cut (root)
 python main.py deauth MAC BSSID --iface IF # 802.11 deauth (root)
 python main.py db purge [--days N]         # prune old scans
 ```
 
-Add `--help` to any subcommand for its full flag set. The complete reference
-is in the [user guide](docs/user-guide.en.md#8-command-line-reference).
+`-v` / `--verbose` and `-q` / `--quiet` go before the command
+(`python main.py -q scan`). `deauth` also takes `--channel N` (otherwise it
+hops 1/6/11) and `--count N` (0 means unlimited). Add `--help` to any
+subcommand for its full flag set. The complete reference is in the
+[user guide](docs/user-guide.en.md#8-command-line-reference).
 
 ---
 
@@ -155,30 +160,39 @@ per line; the file is ignored by git. Full configuration reference:
 
 ## Risk levels
 
-| Level    | Triggered by                                                   |
-|----------|----------------------------------------------------------------|
-| CRITICAL | FTP (21), Telnet (23), NetBIOS (139), SMB (445), RDP (3389)    |
-| MEDIUM   | HTTP (80, 8080), DNS (53), SSDP (1900), NFS (2049), MQTT, CoAP |
-| LOW      | Any other open port                                            |
-| MINIMAL  | No open ports (all closed or filtered)                         |
-| UNKNOWN  | Failed, unreachable or inconclusive scan                       |
+| Level    | Triggered by                                                     |
+|----------|------------------------------------------------------------------|
+| CRITICAL | FTP (21), Telnet (23), NetBIOS (139), SMB (445), RDP (3389)      |
+| MEDIUM   | HTTP (80, 8080), DNS (53), SSDP (1900), NFS (2049),              |
+|          | MQTT (1883, 8883), CoAP (5683)                                   |
+| LOW      | Any other open port                                              |
+| MINIMAL  | No open ports (all closed or filtered)                           |
+| UNKNOWN  | Failed, unreachable or inconclusive scan                         |
 
 ---
 
 ## Data and layout
 
 ```
-main.py
-  cli/        argument parsing and the interactive menu
-  core/       database, env probe, notifier, risk engine
-  modules/    sentinel, hunter, cve_watcher, spoofer, deauther
-  platform/   cross-platform helpers (Android / Linux)
-  web/        Flask dashboard and /help guide
+main.py         entry point: interactive menu or subcommands
+droidnet/
+  cli/          argument parsing and the interactive menu
+  core/         database, risk engine, environment probe, notifier, logging,
+                markup escaping, graceful shutdown (guard), and device
+                identification (router DNS, mDNS, UPnP, Google Cast, DHCP)
+  modules/      sentinel, hunter, exploitdb (offline catalogue), cve_watcher,
+                spoofer, deauther
+  platform/     cross-platform helpers (Android / Linux)
+  web/          Flask dashboard and /help guide
+tests/          pytest suite; never touches the real network, database or log
 ```
 
 Scan results are stored in `sentinel.db` (SQLite) and mirrored as timestamped
-JSON under `reports/`. NVD responses are cached in `nvd_cache/` and Hunter's
-Exploit-DB catalogue in `exploitdb_cache/`; logs go to `logs/droidnet.log`.
+JSON under `reports/`. The same database holds the CVE alerts and the
+auto-cut audit journal; `db purge` deletes old scans but keeps both. NVD responses are
+cached in `nvd_cache/` and Hunter's Exploit-DB catalogue in
+`exploitdb_cache/`; logs go to `logs/droidnet.log`. Full details:
+[Where data is stored](docs/user-guide.en.md#14-where-data-is-stored).
 
 ---
 

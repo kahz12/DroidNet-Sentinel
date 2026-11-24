@@ -5,7 +5,10 @@
 # Compatible ranges: any newer release within the same major version is
 # accepted, so security updates install without breaking API changes.
 requests>=2.31,<3
-rich>=13.7,<14
+# Rich 14 and 15 only dropped Python versions this project no longer
+# supports (3.8) and changed how an empty NO_COLOR/FORCE_COLOR is read, which
+# the project does not set; the suite passes on 13.9, 14.3 and 15.0.
+rich>=13.7,<16
 flask>=3.0,<4
 
 # Optional: needed by the Deauther, and by the Spoofer when arpspoof (dsniff)

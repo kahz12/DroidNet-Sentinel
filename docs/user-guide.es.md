@@ -327,6 +327,7 @@ python main.py hunt
 python main.py cve [--all-time]
 python main.py dashboard [--expose]
 python main.py reports
+python main.py guard-log [--limit N]
 python main.py spoof IP_VICTIMA IP_PUERTA_ENLACE [--iface IFACE]
 python main.py deauth MAC_OBJETIVO BSSID --iface IFACE [--channel N] [--count N]
 python main.py db purge [--days N]
@@ -340,6 +341,7 @@ python main.py db purge [--days N]
 | `cve`       | CVE Watcher. Con `--all-time`, audita CVEs de cualquier fecha; si no, los últimos 120 días. Alias: `cve-watch`. |
 | `dashboard` | Inicia el panel web. Con `--expose`, escucha en todas las interfaces (LAN) en lugar de solo en loopback. |
 | `reports`   | Lista los informes JSON guardados.                                 |
+| `guard-log` | Muestra el diario de auditoría del auto-cut (cortes, restauraciones y rechazos), del más reciente al más antiguo. `--limit` fija cuántos eventos (por defecto 50). Ver [Modo guardián](#107-modo-guardián-auto-cut-continuo). |
 | `spoof`     | Corte ARP de un solo dispositivo. `--iface` toma por defecto la interfaz detectada. Requiere root. |
 | `deauth`    | Envía tramas de desautenticación 802.11. `--iface` es obligatorio; `--channel` fija un canal (si no, salta entre 1/6/11); `--count` es el número de tramas (0 significa ilimitado). Requiere root. |
 | `db purge`  | Borra los escaneos de más de `--days` días (por defecto 90).       |
@@ -355,6 +357,9 @@ python main.py -q scan
 
 # Monitorización continua con corte automático de dispositivos no confiables
 python main.py daemon --auto-cut
+
+# Revisar a quién cortó el guardián, y cuándo (últimos 20 eventos)
+python main.py guard-log --limit 20
 
 # Auditoría completa de vulnerabilidades del software detectado
 python main.py cve --all-time

@@ -76,6 +76,42 @@ def test_main_docstring_flags_exist(example):
     assert words or example.split()[0] in ("-h", "<command>"), example
 
 
+# ── README and user guides ─────────────────────────────────────────
+
+# (document, heading of the section whose first ```bash block is the
+# command reference)
+_DOC_REFERENCES = [
+    ("README.md",                "## Usage"),
+    ("docs/user-guide.en.md",    "### Commands"),
+    ("docs/user-guide.es.md",    "### Comandos"),
+]
+
+
+def _doc_examples(document, heading):
+    text = (_ROOT / document).read_text(encoding="utf-8")
+    section = text[text.index(f"\n{heading}\n"):]
+    block = section[section.index("```bash"):]
+    block = block[:block.index("```", len("```bash"))]
+    return [m.group(1).split("#", 1)[0].strip() for m in _EXAMPLE.finditer(block)]
+
+
+@pytest.mark.parametrize("document, heading", _DOC_REFERENCES)
+def test_doc_command_reference_lists_every_subcommand(document, heading):
+    listed = {_resolve(example)[0][0] for example in _doc_examples(document, heading)
+              if _resolve(example)[0]}
+    commands = set(_subcommands(cli_args._build_parser())) - {"cve-watch"}   # alias of cve
+    assert listed == commands
+
+
+@pytest.mark.parametrize("document, heading", _DOC_REFERENCES)
+def test_doc_command_reference_flags_exist(document, heading):
+    for example in _doc_examples(document, heading):
+        words, parser = _resolve(example)
+        assert words, example
+        for flag in re.findall(r"--[a-z][a-z-]*", example):
+            assert flag in parser._option_string_actions, (document, example, flag)
+
+
 # ── menu help panels ───────────────────────────────────────────────
 
 def test_cli_panel_examples_are_real_commands():
@@ -84,6 +120,13 @@ def test_cli_panel_examples_are_real_commands():
         assert words, line
         for flag in re.findall(r"--[a-z][a-z-]*", line):
             assert flag in parser._option_string_actions, (line, flag)
+
+
+def test_cli_panel_lists_every_subcommand():
+    listed = {_resolve(line.removeprefix("python main.py "))[0][0]
+              for line in _panel_examples(menu._help_cli())}
+    commands = set(_subcommands(cli_args._build_parser())) - {"cve-watch"}   # alias of cve
+    assert listed == commands
 
 
 def test_cli_panel_separates_each_command_from_its_description():

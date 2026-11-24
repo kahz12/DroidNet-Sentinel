@@ -313,6 +313,7 @@ python main.py hunt
 python main.py cve [--all-time]
 python main.py dashboard [--expose]
 python main.py reports
+python main.py guard-log [--limit N]
 python main.py spoof VICTIM_IP GATEWAY_IP [--iface IFACE]
 python main.py deauth TARGET_MAC BSSID --iface IFACE [--channel N] [--count N]
 python main.py db purge [--days N]
@@ -326,6 +327,7 @@ python main.py db purge [--days N]
 | `cve`       | CVE Watcher. With `--all-time`, audit CVEs of any date; otherwise the last 120 days. Alias: `cve-watch`. |
 | `dashboard` | Start the web UI. With `--expose`, bind to all interfaces (LAN) instead of loopback. |
 | `reports`   | List the saved JSON reports.                                       |
+| `guard-log` | Show the auto-cut audit journal (cuts, restores and refusals), newest first. `--limit` sets how many events (default 50). See [Guardian mode](#107-guardian-mode-continuous-auto-cut). |
 | `spoof`     | ARP-cut a single host. `--iface` defaults to the detected interface. Requires root. |
 | `deauth`    | Send 802.11 deauth frames. `--iface` is required; `--channel` locks to one channel (otherwise it hops 1/6/11); `--count` is the number of frames (0 means unlimited). Requires root. |
 | `db purge`  | Delete scans older than `--days` (default 90).                     |
@@ -341,6 +343,9 @@ python main.py -q scan
 
 # Continuous monitoring with automatic cutting of untrusted hosts
 python main.py daemon --auto-cut
+
+# Review whom the guardian cut, and when (last 20 events)
+python main.py guard-log --limit 20
 
 # Full vulnerability audit of the detected software
 python main.py cve --all-time

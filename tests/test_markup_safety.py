@@ -6,9 +6,12 @@ disk. A stray "[/x]" in any of them would raise MarkupError and abort the run,
 and a valid "[link=...]" would turn into a terminal hyperlink, so each value is
 escaped before it reaches Rich.
 """
+import ast
 import io
 import json
+import re
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -134,3 +137,23 @@ def test_saved_reports_list_renders_report_fields_literally(monkeypatch, tmp_pat
     text = text_of()
     for token in ("n[/n]", "t[/t]", f"r{FILE_LINK}.json"):
         assert token in text, token
+
+
+# ── Status markers in our own messages ─────────────────────────────
+
+def test_status_markers_are_not_swallowed_as_markup_tags():
+    """A marker such as "[x]" in a message is a Rich tag, so it never prints.
+
+    Rich reads "[" followed by a lowercase letter as an opening tag and drops
+    an unknown one silently: "[red][x] Root required[/red]" shows only
+    " Root required". Markers must start with a symbol instead: [✗] [!] [+].
+    """
+    marker = re.compile(r"\[[a-z]\]")
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in sorted((root / "droidnet").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and marker.search(node.value):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}: {node.value!r}")
+    assert not offenders, "\n".join(offenders)

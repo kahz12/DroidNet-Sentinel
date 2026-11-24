@@ -235,7 +235,7 @@ def _help_risk() -> Panel:
                   "FTP / Telnet / SMB / NetBIOS / RDP",
                   "High-impact service that should not be exposed.")
     table.add_row("[bold yellow]MEDIUM[/bold yellow]",
-                  "HTTP / HTTP-alt / DNS / SSDP / NFS",
+                  "HTTP / HTTP-alt / DNS / SSDP / NFS / MQTT / CoAP",
                   "LAN-exposed service. Worth a banner check.")
     table.add_row("[bold blue]LOW[/bold blue]",
                   "Other open ports",
@@ -243,6 +243,9 @@ def _help_risk() -> Panel:
     table.add_row("[bold green]MINIMAL[/bold green]",
                   "No open ports",
                   "Reachable host with no services.")
+    table.add_row("[dim]UNKNOWN[/dim]",
+                  "Failed or inconclusive scan",
+                  "Host could not be assessed. Scan it again.")
     return Panel(
         table,
         title="[bold cyan]Risk levels[/bold cyan]",
@@ -290,6 +293,7 @@ def _help_cli() -> Panel:
         ("  python main.py cve --all-time  ",  "cyan"), "Full CVE audit, any date\n",
         ("  python main.py dashboard       ",  "cyan"), "Start the web UI\n",
         ("  python main.py reports         ",  "cyan"), "List saved reports\n",
+        ("  python main.py guard-log       ",  "cyan"), "Show the ARP-cut audit journal\n",
         ("  python main.py spoof IP GW     ",  "cyan"), "Manual ARP cut\n",
         ("  python main.py deauth ...      ",  "cyan"), "Manual deauth\n",
         ("  python main.py db purge        ",  "cyan"), "Prune old scans\n\n",
@@ -379,7 +383,7 @@ def _run_spoofer_interactive() -> None:
     from droidnet.modules.spoofer import poison
 
     if not check_root():
-        rprint("[red][x] Root privileges required for the Spoofer.[/red]")
+        rprint("[red][✗] Root privileges required for the Spoofer.[/red]")
         return
 
     console.print("\n[bold cyan]── ARP Spoofer ──[/bold cyan]")
@@ -412,7 +416,7 @@ def _run_deauther_interactive() -> None:
     from droidnet.modules.deauther import deauth_target, BROADCAST
 
     if not check_root():
-        rprint("[red][x] Root privileges required for the Deauther.[/red]")
+        rprint("[red][✗] Root privileges required for the Deauther.[/red]")
         return
 
     console.print("\n[bold cyan]── 802.11 Deauther ──[/bold cyan]")
